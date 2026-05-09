@@ -26,6 +26,8 @@ import {
   EmptyState,
   LoadingSpinner,
 } from '@/components/ui';
+import { ManualSensorInput } from '@/components/ManualSensorInput';
+import { useTranslation } from '@/hooks/useTranslation';
 import { Colors, Spacing, BorderRadius, Shadows, Typography } from '@/constants/theme';
 import type { RootTabParamList } from '@/types';
 
@@ -80,6 +82,8 @@ export function HomeScreen() {
   const insets     = useSafeAreaInsets();
   const navigation = useNavigation<Nav>();
   const { refresh } = useSession();
+  const { t } = useTranslation();
+  const [showManual, setShowManual] = React.useState(false);
 
   const profile       = useAppStore((s) => s.profile);
   const sensorReading = useAppStore((s) => s.sensorReading);
@@ -110,6 +114,16 @@ export function HomeScreen() {
   const phase    = calendar?.current_phase;
   const todayTask = calendar?.tasks_today?.[0] ?? null;
   const topAlert  = activeAlerts[0] ?? null;
+  const TASK_TITLES: Record<string, string> = {
+    pest_check:        'Scout for pests',
+    fertiliser:        'Apply fertiliser',
+    irrigation:        'Irrigation check',
+    weed_control:      'Weed control',
+    soil_check:        'Soil check',
+    harvest_prep:      'Prepare for harvest',
+    planting:          'Planting',
+    land_preparation:  'Land preparation',
+  };
 
   // Planting days
   const daysSincePlanting = activeCrop
@@ -121,6 +135,7 @@ export function HomeScreen() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
+    <>
     <ScrollView
       style={styles.screen}
       contentContainerStyle={styles.content}
@@ -168,6 +183,15 @@ export function HomeScreen() {
           />
         </View>
       </View>
+
+      {/* Enter readings manually button */}
+      <TouchableOpacity
+        style={styles.manualBtn}
+        onPress={() => setShowManual(true)}
+        activeOpacity={0.75}
+      >
+        <Text style={styles.manualBtnText}>✏️  Enter soil readings manually</Text>
+      </TouchableOpacity>
 
       {/* ── Alerts ───────────────────────────────────────────────────────── */}
       {topAlert && (
@@ -255,8 +279,8 @@ export function HomeScreen() {
       <SectionTitle label="Today's priority" />
       {todayTask ? (
         <TaskCard
-          title={todayTask.title}
-          description={todayTask.description}
+          title={todayTask.title ?? todayTask.type?.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) ?? 'Task'}
+          description={todayTask.description ?? todayTask.message ?? ''}
           type={todayTask.type}
           dueLabel="Due today"
           onPress={() => navigation.navigate('Calendar')}
@@ -300,6 +324,12 @@ export function HomeScreen() {
       {/* Bottom padding */}
       <View style={{ height: 16 }} />
     </ScrollView>
+
+    <ManualSensorInput
+      visible={showManual}
+      onClose={() => setShowManual(false)}
+    />
+    </>
   );
 }
 
@@ -311,6 +341,40 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingBottom: Spacing[6],
+  },
+  demoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.amber100,
+    borderWidth: 1,
+    borderColor: '#EF9F27',
+    borderRadius: BorderRadius.sm,
+    marginHorizontal: Spacing[4],
+    marginTop: 10,
+    padding: 10,
+    gap: 10,
+  },
+  demoBannerLeft:    { flex: 1 },
+  demoBannerTitle:   { fontSize: 13, fontWeight: '700', color: Colors.amber700 },
+  demoBannerSub:     { fontSize: 11, color: Colors.amber700, marginTop: 2, lineHeight: 15 },
+  demoBannerBtn:     { backgroundColor: Colors.amber500, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 7 },
+  demoBannerBtnText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  manualBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: Spacing[4],
+    marginTop: 10,
+    paddingVertical: 8,
+    backgroundColor: Colors.green050,
+    borderRadius: BorderRadius.sm,
+    borderWidth: 1,
+    borderColor: Colors.green100,
+  },
+  manualBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.green700,
   },
 
   // Hero

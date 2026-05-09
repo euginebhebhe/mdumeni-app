@@ -50,6 +50,16 @@ interface AppState {
   onboardingDone: boolean;
   setOnboardingDone: (v: boolean) => void;
 
+  // Demo vs real project mode
+  isDemoMode: boolean;
+  setDemoMode: (v: boolean) => void;
+
+  // Auth — farmer identity
+  authToken:  string | null;
+  farmerId:   string | null;
+  setAuthToken: (token: string, farmerId: string) => void;
+  clearAuth:  () => void;
+
   // Calendar sub-tab
   calendarTab: 'calendar' | 'advice' | 'pests';
   setCalendarTab: (t: 'calendar' | 'advice' | 'pests') => void;
@@ -116,6 +126,16 @@ export const useAppStore = create<AppState>()(
     // Onboarding
     onboardingDone: false,
     setOnboardingDone: (v) => set({ onboardingDone: v }),
+
+    // Demo mode
+    isDemoMode: true,
+    setDemoMode: (v) => set({ isDemoMode: v }),
+
+    // Auth
+    authToken:  null,
+    farmerId:   null,
+    setAuthToken: (token, farmerId) => set({ authToken: token, farmerId }),
+    clearAuth:  () => set({ authToken: null, farmerId: null }),
 
     // Calendar tab
     calendarTab: 'calendar',

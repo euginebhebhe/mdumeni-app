@@ -6,6 +6,7 @@ import React from 'react';
 import {
   View,
   Text,
+  Image,
   StyleSheet,
   TouchableOpacity,
   Animated,
@@ -38,7 +39,14 @@ export function AppHeader({ farmName = "My Farm", region = "" }: AppHeaderProps)
       {/* Logo + farm name */}
       <View style={styles.headerLeft}>
         <View style={styles.logoIcon}>
-          <Text style={styles.logoEmoji}>🌱</Text>
+          <Image
+            source={require('/assets/icon.png')}
+            style={{
+              width: 38,
+              height: 42,
+            }}
+            resizeMode="contain"
+          />
         </View>
         <View>
           <Text style={styles.logoText}>
@@ -275,7 +283,14 @@ export function PhaseDots({ total, current, done }: PhaseDotsProps) {
 export function LoadingSpinner({ message = 'Loading...' }: { message?: string }) {
   return (
     <View style={styles.loadingWrap}>
-      <Text style={styles.loadingEmoji}>🌱</Text>
+      <Image
+        source={require('/assets/icon.png')}
+        style={{
+          width: 32,
+          height: 32,
+        }}
+        resizeMode="contain"
+      />
       <Text style={styles.loadingText}>{message}</Text>
     </View>
   );
@@ -300,8 +315,10 @@ const styles = StyleSheet.create({
   logoIcon: {
     width: 34,
     height: 34,
-    backgroundColor: Colors.amber500,
+    backgroundColor: Colors.white,
     borderRadius: 8,
+    borderColor: Colors.amber500,
+    borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
   },

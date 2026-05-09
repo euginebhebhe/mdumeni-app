@@ -4,12 +4,18 @@
 
 import React from 'react';
 import { useAppInit } from '@/hooks/useAppInit';
+import { useEffect, useRef } from 'react';
+import { pollLatestReading } from '@/services/api';
+import { checkAndAlertSensorThresholds, checkHarvestAlert, scheduleDailyTaskReminder } from '@/services/notifications';
+import { insertReading } from '@/db/database';
+import { useSQLiteContext } from 'expo-sqlite';
 import { View, Text, StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppHeader } from '@/components/ui';
+import { OfflineBanner } from '@/components/OfflineBanner';
 import { useAppStore } from '@/store';
 import { Colors, BorderRadius } from '@/constants/theme';
 import type { RootTabParamList } from '@/types';
@@ -55,11 +61,15 @@ function WithHeader({ screen: Screen, showHeader = true }: {
   showHeader?: boolean;
 }) {
   const profile = useAppStore((s) => s.profile);
-  const farmName = profile?.district ? `${profile.district} Farm` : 'My Farm';
+  const isDemoMode = useAppStore((s) => s.isDemoMode);
+  const farmName = isDemoMode
+    ? '🧪 Demo Farm'
+    : profile?.district ? `${profile.district} Farm` : 'My Farm';
   const region   = profile?.agro_region ? `Region ${profile.agro_region}` : '';
 
   return (
     <View style={{ flex: 1, backgroundColor: Colors.background }}>
+      <OfflineBanner />
       {showHeader && <AppHeader farmName={farmName} region={region} />}
       <Screen />
     </View>
@@ -69,6 +79,60 @@ function WithHeader({ screen: Screen, showHeader = true }: {
 // ── Main navigator ────────────────────────────────────────────────────────────
 export function AppNavigator() {
   useAppInit(); // seed demo data + load profile from SQLite on startup
+
+  // Schedule harvest alert when days to harvest changes
+  const daysToHarvest = useAppStore((s) => s.session?.daily_calendar?.days_to_harvest);
+  const cropName      = useAppStore((s) => s.activeCrop?.crop_name);
+  useEffect(() => {
+    if (daysToHarvest && cropName) {
+      checkHarvestAlert(cropName, daysToHarvest).catch(() => {});
+    }
+  }, [daysToHarvest, cropName]);
+
+  // Update daily notification task when session refreshes
+  const todayTask = useAppStore((s) => s.session?.daily_calendar?.tasks_today?.[0]?.title);
+  useEffect(() => {
+    if (todayTask) {
+      scheduleDailyTaskReminder(todayTask).catch(() => {});
+    }
+  }, [todayTask]);
+
+  // Poll /sensor/latest every 30 seconds when online
+  // This picks up readings submitted via the web input form
+  const isOnline     = useAppStore((s) => s.isOnline);
+  const setSensor    = useAppStore((s) => s.setSensorReading);
+  const db           = useSQLiteContext();
+  const lastReadingAt = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!isOnline) return;
+
+    const poll = async () => {
+      const reading = await pollLatestReading();
+      if (!reading) return;
+      // Only update if we got a newer reading
+      if (reading.recorded_at === lastReadingAt.current) return;
+      lastReadingAt.current = reading.recorded_at;
+      const r = {
+        device_id:   reading.device_id,
+        soil_ph:     reading.soil_ph,
+        moisture_pct: reading.moisture_pct,
+        temp_c:      reading.temp_c,
+        battery_pct: reading.battery_pct,
+        recorded_at: reading.recorded_at,
+        is_synced:   1 as const,
+      };
+      await insertReading(db, r);
+      setSensor({ ...r, id: Date.now() });
+
+      // Check thresholds and send alerts
+      checkAndAlertSensorThresholds(reading.soil_ph, reading.moisture_pct).catch(() => {});
+    };
+
+    poll(); // immediate on mount
+    const interval = setInterval(poll, 30_000); // then every 30s
+    return () => clearInterval(interval);
+  }, [isOnline, db, setSensor]);
   const criticalAlerts = useAppStore(
     (s) => s.activeAlerts.filter((a) => a.severity === 'critical').length
   );

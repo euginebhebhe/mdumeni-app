@@ -19,13 +19,14 @@ function PeriodTabs({ active, onChange }: { active: Period; onChange: (p: Period
     <View style={ptStyles.row}>
       {PERIODS.map((p) => (
         <TouchableOpacity
-          key={p}
-          onPress={() => onChange(p)}
-          style={[ptStyles.chip, active === p && ptStyles.chipActive]}
-          activeOpacity={0.7}
+           key={p}
+          onPress={() => p === 'This season' && onChange(p)}
+          style={[ptStyles.chip, active === p && ptStyles.chipActive,
+            p !== 'This season' && { opacity: 0.4 }]}
+          activeOpacity={p === 'This season' ? 0.7 : 1}
         >
           <Text style={[ptStyles.chipText, active === p && ptStyles.chipTextActive]}>
-            {p}
+            {p}{p !== 'This season' ? ' (coming soon)' : ''}
           </Text>
         </TouchableOpacity>
       ))}
@@ -187,7 +188,7 @@ export function AnalyticsScreen() {
 
   const spendColors = [
     Colors.amber500, Colors.blue500, Colors.green400,
-    Colors.red500, "#4A3585",
+    Colors.red500, '#4A3585',
   ];
 
   return (
@@ -299,6 +300,7 @@ export function AnalyticsScreen() {
           <Text style={histStyles.headerText}>Past seasons</Text>
         </View>
         <SeasonRow
+          key="season-current"
           cropName={activeCrop?.crop_name ?? 'Maize'}
           variety="ZM521 · Low input"
           size={`${activeCrop?.farm_size_ha ?? 2.4} ha`}
@@ -307,6 +309,7 @@ export function AnalyticsScreen() {
           isPositive={netProfit >= 0}
         />
         <SeasonRow
+          key="season-2024-25"
           cropName="Maize 2024/25"
           variety="ZM521 · Low input"
           size="2.4 ha"
@@ -315,6 +318,7 @@ export function AnalyticsScreen() {
           isPositive
         />
         <SeasonRow
+          key="season-gn-2024"
           cropName="Groundnuts 2024"
           variety="Falcon · Low input"
           size="2.4 ha"
@@ -323,6 +327,7 @@ export function AnalyticsScreen() {
           isPositive
         />
         <SeasonRow
+          key="season-2023-24"
           cropName="Maize 2023/24"
           variety="ZM521 · Low input"
           size="2.4 ha"
@@ -335,9 +340,11 @@ export function AnalyticsScreen() {
       {/* ── Spending breakdown ─────────────────────────────────────────────── */}
       <SectionTitle label="Input spending — this season" />
       <Card>
-        {costLines.map((line, i) => (
+        {costLines
+          .filter((line, idx, arr) => arr.findIndex(l => l.category === line.category) === idx)
+          .map((line, i) => (
           <SpendRow
-            key={line.category}
+            key={`cost-${i}-${line.category}`}
             label={line.category}
             amount={line.amount_usd}
             total={totalCost}

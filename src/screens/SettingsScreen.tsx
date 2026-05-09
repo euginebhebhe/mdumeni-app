@@ -9,9 +9,20 @@ import {
 } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useAppStore } from '@/store';
+import { useNavigation } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import type { RootTabParamList } from '@/types';
 import { saveProfile } from '@/db/database';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
 import { Badge } from '@/components/ui';
+import { useTranslation } from '@/hooks/useTranslation';
+import { ManualSensorInput } from '@/components/ManualSensorInput';
+import { CropSelectorScreen } from '@/screens/CropSelectorScreen';
+import { ProfileEditScreen } from '@/screens/ProfileEditScreen';
+import { ProjectModeScreen } from '@/screens/ProjectModeScreen';
+import { YieldRecordScreen } from '@/screens/YieldRecordScreen';
+import { SeasonHistoryScreen } from '@/screens/SeasonHistoryScreen';
+import { Modal } from 'react-native';
 
 // ── Setting row ────────────────────────────────────────────────────────────────
 interface SettingRowProps {
@@ -55,14 +66,23 @@ function SettingsGroup({ children }: { children: React.ReactNode }) {
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 export function SettingsScreen() {
-  const db = useSQLiteContext();
+  const db         = useSQLiteContext();
+  const { t }      = useTranslation();
+  const navigation  = useNavigation<BottomTabNavigationProp<RootTabParamList>>();
+  const isDemoMode  = useAppStore((s) => s.isDemoMode);
   const profile        = useAppStore((s) => s.profile);
   const updateProfile  = useAppStore((s) => s.updateProfile);
   const sensorConnected = useAppStore((s) => s.sensorConnected);
   const sensorDeviceId  = useAppStore((s) => s.sensorDeviceId);
   const sensor          = useAppStore((s) => s.sensorReading);
 
-  const [alertsOn, setAlertsOn] = useState(true);
+  const [alertsOn, setAlertsOn]             = useState(true);
+  const [showCropSelector, setShowCropSelector] = useState(false);
+  const [showProfileEdit, setShowProfileEdit]   = useState(false);
+  const [showProjectMode, setShowProjectMode]   = useState(false);
+  const [showYieldRecord, setShowYieldRecord]     = useState(false);
+  const [showSeasonHistory, setShowSeasonHistory] = useState(false);
+  const [showManual, setShowManual] = useState(false);
 
   const toggleAlerts = (val: boolean) => {
     setAlertsOn(val);
@@ -130,11 +150,10 @@ export function SettingsScreen() {
     ? `Region ${profile.agro_region} — ${['Highveld', 'Mashonaland', 'Midlands', 'Masvingo', 'Lowveld'][profile.agro_region - 1] ?? ''}`
     : '—';
 
-  const langLabel = profile?.language
-    ? profile.language.charAt(0).toUpperCase() + profile.language.slice(1)
-    : 'English';
+  const langLabel = profile?.language === 'shona' ? 'Shona' : profile?.language === 'ndebele' ? 'Ndebele' : 'English';
 
   return (
+    <>
     <ScrollView
       style={styles.screen}
       showsVerticalScrollIndicator={false}
@@ -162,21 +181,30 @@ export function SettingsScreen() {
       </View>
 
       {/* ── Sensor status ────────────────────────────────────────────────── */}
-      <View style={styles.sensorPill}>
-        <View style={[styles.sensorDot, sensorConnected && styles.sensorDotActive]} />
-        <View>
-          <Text style={styles.sensorTitle}>
-            {sensorConnected
-              ? `Sensor connected — ${sensorDeviceId ?? 'MDUMENI-001'}`
-              : 'No sensor paired'}
-          </Text>
-          <Text style={styles.sensorSub}>
-            {sensor
-              ? `Last read ${new Date(sensor.recorded_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })} · ${sensor.battery_pct}% battery`
-              : 'Pair your sensor in the options below'}
-          </Text>
-        </View>
-      </View>
+      <TouchableOpacity
+          style={styles.sensorPill}
+          onPress={() => setShowManual(true)}
+          activeOpacity={0.75}
+    >
+          <View style={[styles.sensorDot, sensorConnected && styles.sensorDotActive]} />
+          
+          <View>
+            <Text style={styles.sensorTitle}>
+              {sensorConnected
+                ? `Sensor connected — ${sensorDeviceId ?? 'MDUMENI-001'}`
+                : 'No sensor paired'}
+            </Text>
+
+            <Text style={styles.sensorSub}>
+              {sensor
+                ? `Last read ${new Date(sensor.recorded_at).toLocaleTimeString('en-GB', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })} · ${sensor.battery_pct}% battery`
+                : 'Pair your sensor in the options below'}
+            </Text>
+          </View>
+        </TouchableOpacity>
 
       {/* ── Farm profile ─────────────────────────────────────────────────── */}
       <Text style={styles.groupLabel}>Farm profile</Text>
@@ -244,6 +272,30 @@ export function SettingsScreen() {
           }
         />
         <SettingRow
+          icon="✏️"
+          title="Enter readings manually"
+          subtitle="Type pH, moisture & temp from a handheld meter"
+          onPress={() => setShowManual(true)}
+        />
+        <SettingRow
+          icon="🌱"
+          title="Active crop & planting date"
+          subtitle="Set which crop you are currently growing"
+          onPress={() => setShowCropSelector(true)}
+        />
+        <SettingRow
+          icon="✏️"
+          title="Edit farm profile"
+          subtitle="Change farm size, region, irrigation, budget"
+          onPress={() => setShowProfileEdit(true)}
+        />
+        <SettingRow
+          icon="🔀"
+          title="Project mode"
+          subtitle={isDemoMode ? "Currently in Demo mode — tap to switch" : "Currently in Real project mode"}
+          onPress={() => setShowProjectMode(true)}
+        />
+        <SettingRow
           icon="📱"
           title="Pair sensor device"
           subtitle={sensorConnected ? `${sensorDeviceId} connected` : 'No device paired'}
@@ -255,6 +307,18 @@ export function SettingsScreen() {
       {/* ── Help & support ────────────────────────────────────────────────── */}
       <Text style={styles.groupLabel}>Help &amp; support</Text>
       <SettingsGroup>
+        <SettingRow
+          icon="🌾"
+          title="Record harvest yield"
+          subtitle="Log your actual harvest after each season"
+          onPress={() => setShowYieldRecord(true)}
+        />
+        <SettingRow
+          icon="📊"
+          title="Season history"
+          subtitle="View all past crops, yields and profits"
+          onPress={() => setShowSeasonHistory(true)}
+        />
         <SettingRow
           icon="💬"
           title="Ask AI assistant"
@@ -291,6 +355,73 @@ export function SettingsScreen() {
         </Text>
       </View>
     </ScrollView>
+
+      <Modal visible={showYieldRecord} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowYieldRecord(false)}>
+        <View style={{ flex: 1, paddingTop: 20 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, marginBottom: 8 }}>
+            <TouchableOpacity onPress={() => setShowYieldRecord(false)} style={{ padding: 8 }}>
+              <Text style={{ fontSize: 16, color: Colors.blue500 }}>✕ Close</Text>
+            </TouchableOpacity>
+          </View>
+          <YieldRecordScreen onDone={() => setShowYieldRecord(false)} />
+        </View>
+      </Modal>
+
+      <Modal visible={showSeasonHistory} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowSeasonHistory(false)}>
+        <View style={{ flex: 1, paddingTop: 20 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, marginBottom: 8 }}>
+            <TouchableOpacity onPress={() => setShowSeasonHistory(false)} style={{ padding: 8 }}>
+              <Text style={{ fontSize: 16, color: Colors.blue500 }}>✕ Close</Text>
+            </TouchableOpacity>
+          </View>
+          <SeasonHistoryScreen onRecordYield={() => { setShowSeasonHistory(false); setShowYieldRecord(true); }} />
+        </View>
+      </Modal>
+
+      <ManualSensorInput
+        visible={showManual}
+        onClose={() => setShowManual(false)}
+      />
+
+      <Modal visible={showCropSelector} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowCropSelector(false)}>
+        <View style={{ flex: 1, paddingTop: 20 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, marginBottom: 8 }}>
+            <TouchableOpacity onPress={() => setShowCropSelector(false)} style={{ padding: 8 }}>
+              <Text style={{ fontSize: 16, color: Colors.blue500 }}>✕ Close</Text>
+            </TouchableOpacity>
+          </View>
+          <CropSelectorScreen onDone={() => setShowCropSelector(false)} />
+        </View>
+      </Modal>
+
+      <Modal visible={showProfileEdit} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowProfileEdit(false)}>
+        <View style={{ flex: 1, paddingTop: 20 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, marginBottom: 8 }}>
+            <TouchableOpacity onPress={() => setShowProfileEdit(false)} style={{ padding: 8 }}>
+              <Text style={{ fontSize: 16, color: Colors.blue500 }}>✕ Close</Text>
+            </TouchableOpacity>
+          </View>
+          <ProfileEditScreen onDone={() => setShowProfileEdit(false)} />
+        </View>
+      </Modal>
+
+      <Modal visible={showProjectMode} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowProjectMode(false)}>
+        <View style={{ flex: 1, paddingTop: 20 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, marginBottom: 8 }}>
+            <TouchableOpacity onPress={() => setShowProjectMode(false)} style={{ padding: 8 }}>
+              <Text style={{ fontSize: 16, color: Colors.blue500 }}>✕ Close</Text>
+            </TouchableOpacity>
+          </View>
+          <ProjectModeScreen
+            onDone={() => setShowProjectMode(false)}
+            onStartReal={() => {
+              setShowProjectMode(false);
+              useAppStore.getState().setOnboardingDone(false);
+            }}
+          />
+        </View>
+      </Modal>
+      </>
   );
 }
 

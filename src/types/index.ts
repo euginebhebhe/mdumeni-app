@@ -104,6 +104,7 @@ export interface CalendarPhase {
 export interface CalendarTask {
   title:       string;
   description: string;
+  message: string;
   type:        'instruction' | 'fertiliser' | 'pest_check' | 'water' | 'harvest';
   due_date?:   string;
   priority:    'high' | 'medium' | 'low';

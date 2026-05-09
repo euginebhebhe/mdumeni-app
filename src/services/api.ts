@@ -1,16 +1,12 @@
 // src/services/api.ts
 // FastAPI client — typed, offline-aware, with SQLite cache fallback
-// Every call uses the /session composite endpoint for efficiency
 
 import type { SessionRequest, SessionResponse } from '@/types';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
-// Change BASE_URL to your deployed server URL before production
-const BASE_URL = __DEV__
-  ? 'http://192.168.1.100:8000'   // local dev — change to your machine's LAN IP
-  : 'https://api.mdumeni.intelli-farming.com';
+const BASE_URL = 'https://mdumeni-api.onrender.com';
 
-const DEFAULT_TIMEOUT = 12_000; // 12 seconds
+const DEFAULT_TIMEOUT = 12_000;
 
 // ── Fetch with timeout ────────────────────────────────────────────────────────
 async function fetchWithTimeout(
@@ -30,16 +26,38 @@ async function fetchWithTimeout(
   }
 }
 
-// ── POST helper with typed response ──────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 async function post<TReq, TRes>(
   path: string,
-  body: TReq
+  body: TReq,
+  token?: string
+): Promise<TRes> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const response = await fetchWithTimeout(
+    `${BASE_URL}${path}`,
+    { method: 'POST', headers, body: JSON.stringify(body) }
+  );
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail ?? `HTTP ${response.status}`);
+  }
+  return response.json() as Promise<TRes>;
+}
+
+async function put<TReq, TRes>(
+  path: string,
+  body: TReq,
+  token: string
 ): Promise<TRes> {
   const response = await fetchWithTimeout(
     `${BASE_URL}${path}`,
     {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
       body: JSON.stringify(body),
     }
   );
@@ -50,10 +68,12 @@ async function post<TReq, TRes>(
   return response.json() as Promise<TRes>;
 }
 
-async function get<TRes>(path: string): Promise<TRes> {
+async function get<TRes>(path: string, token?: string): Promise<TRes> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   const response = await fetchWithTimeout(
     `${BASE_URL}${path}`,
-    { method: 'GET', headers: { 'Content-Type': 'application/json' } }
+    { method: 'GET', headers }
   );
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json() as Promise<TRes>;
@@ -68,7 +88,7 @@ export async function callSession(
   return post<SessionRequest, SessionResponse>('/session', payload);
 }
 
-/** Health check — used on startup to determine online status */
+/** Health check */
 export async function checkHealth(): Promise<boolean> {
   try {
     const result = await get<{ status: string }>('/health');
@@ -78,30 +98,102 @@ export async function checkHealth(): Promise<boolean> {
   }
 }
 
-/** Get AI chat response — passes full farming context */
+/** AI chat — passes full farming context to Groq */
 export async function callAIChat(
   question: string,
   farmContext: Record<string, unknown>
 ): Promise<string> {
-  // When the real /chat endpoint exists, call it here
-  // For now: build a contextual response based on farm data
-  // This will be replaced with the actual LLM endpoint
   const response = await post<
     { question: string; context: Record<string, unknown> },
-    { answer: string }
+    { answer: string; response: string }
   >('/chat', { question, context: farmContext });
-  return response.answer;
+  return response.answer ?? response.response ?? '';
 }
 
-/** Upload batched sensor readings for sync */
-export async function syncReadings(
-  readings: Array<{
-    device_id: string;
-    soil_ph: number;
-    moisture_pct: number;
-    temp_c: number;
-    recorded_at: string;
-  }>
+/** Poll the server for the latest sensor reading */
+export async function pollLatestReading(): Promise<{
+  device_id: string;
+  soil_ph: number;
+  moisture_pct: number;
+  temp_c: number;
+  battery_pct: number;
+  recorded_at: string;
+  source: string;
+} | null> {
+  try {
+    return await get('/sensor/latest');
+  } catch {
+    return null;
+  }
+}
+
+/** Update farmer profile — requires auth token */
+export async function updateFarmerProfile(
+  data: {
+    phone_number: string;
+    pin: string;
+    agro_region: number;
+    farm_size_ha: number;
+    has_irrigation: boolean;
+    budget_level: string;
+    province: string;
+    district: string;
+    language: string;
+  },
+  token: string
 ): Promise<void> {
-  await post('/sync/readings', { readings });
+  await put('/auth/profile', data, token);
+}
+
+/** Get current farmer profile from token */
+export async function getFarmerProfile(token: string): Promise<any> {
+  return get('/auth/me', token);
+}
+
+/** Record actual harvest yield */
+export async function recordYield(data: {
+  farmer_id: string;
+  crop_id: string;
+  crop_name: string;
+  planting_date: string;
+  harvest_date: string;
+  farm_size_ha: number;
+  budget_level: string;
+  predicted_yield_kg: number;
+  actual_yield_kg: number;
+  total_cost_usd: number;
+  gross_revenue_usd: number;
+  net_profit_usd: number;
+  notes: string;
+}): Promise<{ id: string }> {
+  return post('/farmer/yield', data);
+}
+
+/** Get farmer season history */
+export async function getSeasonHistory(token: string): Promise<any[]> {
+  try {
+    return await get('/farmer/history', token);
+  } catch {
+    return [];
+  }
+}
+
+/** Save a sensor reading linked to a farmer */
+export async function saveFarmerReading(data: {
+  farmer_id: string;
+  soil_ph: number;
+  moisture_pct: number;
+  temp_c: number;
+  device_id?: string;
+  source?: string;
+}): Promise<void> {
+  await post('/farmer/reading', data);
+}
+
+/** Set farmer's active crop */
+export async function setFarmerCrop(
+  data: { crop_id: string; crop_name: string; planting_date: string },
+  token: string
+): Promise<void> {
+  await post('/farmer/crop', data, token);
 }

@@ -1,6 +1,7 @@
 // src/screens/ChatScreen.tsx
-// AI Assistance screen — reads live farm data, answers agronomic questions
-// Working chat UI: quick questions, free-text input, typing indicator, context chips
+// Hybrid AI chatbot:
+// ONLINE  → Real Claude API via /chat — answers ANY question with farm context
+// OFFLINE → 486 pre-built Q&A organised by category — tap to get instant answer
 
 import React, { useState, useRef, useCallback } from 'react';
 import {
@@ -11,239 +12,165 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore, type ChatMessage } from '@/store';
 import { callAIChat } from '@/services/api';
+import { useTranslation } from '@/hooks/useTranslation';
 import { Colors, Spacing, BorderRadius, Shadows } from '@/constants/theme';
+import QA_DATA from '@/engines/offlineQA.json';
 
-// ── Quick question chips ───────────────────────────────────────────────────────
-const QUICK_QUESTIONS = [
-  'Best rotation after maize?',
-  'Fall Armyworm treatment?',
-  'When should I harvest?',
-  'How much lime do I need?',
-  'Improve my profit?',
-];
+const ALL_QA = QA_DATA as { category: string; question: string; answer: string }[];
+const CATEGORIES = [...new Set(ALL_QA.map(q => q.category))];
 
-// ── Data context chips shown in the first AI greeting ─────────────────────────
-function ContextChips({ farmData }: { farmData?: Record<string, unknown> }) {
-  if (!farmData) return null;
-  const chips = [
-    farmData.ph    && { label: `pH ${farmData.ph}`,          warn: Number(farmData.ph) < 5.5 },
-    farmData.moisture && { label: `💧 ${farmData.moisture}%`, warn: false },
-    farmData.temp  && { label: `🌡 ${farmData.temp}°C`,       warn: false },
-    farmData.crop  && { label: `🌽 ${farmData.crop}`,          warn: false },
-  ].filter(Boolean) as { label: string; warn: boolean }[];
-
-  if (chips.length === 0) return null;
-  return (
-    <View style={chipStyles.row}>
-      {chips.map((c, i) => (
-        <View key={i} style={[chipStyles.chip, c.warn && chipStyles.chipWarn]}>
-          <Text style={[chipStyles.text, c.warn && chipStyles.textWarn]}>{c.label}</Text>
-        </View>
-      ))}
-    </View>
-  );
+function fillTemplate(template: string, d: Record<string, unknown>): string {
+  return template.replace(/\{(\w+)\}/g, (_, k) => String(d[k] ?? `{${k}}`));
 }
 
-// ── Chat bubble ────────────────────────────────────────────────────────────────
-interface BubbleProps {
-  message: ChatMessage;
+function buildFarmData(
+  ph: number | null, moisture: number | null, temp: number | null,
+  crop: string | null, region: number, farmSize: number,
+  budget: string, district: string,
+): Record<string, unknown> {
+  const phAdvice = !ph ? '' : ph < 5.0 ? 'Very acidic — lime urgently needed before planting.'
+    : ph < 5.5 ? 'Acidic — apply lime at 250 kg/ha before planting.'
+    : ph < 6.5 ? 'Good range for most crops.' : 'Slightly alkaline — most crops still grow well.';
+  const phRating = !ph ? 'unknown' : ph < 5.0 ? 'very acidic' : ph < 5.5 ? 'acidic — lime needed'
+    : ph < 6.5 ? 'good' : ph < 7.5 ? 'neutral — good' : 'alkaline';
+  const limeTotal = ph && ph < 5.8 ? farmSize * Math.round((5.8 - ph) * 500) : 0;
+  const months = ['January','February','March','April','May','June',
+    'July','August','September','October','November','December'];
+  return {
+    ph: ph?.toFixed(1) ?? '—', moisture: moisture ?? '—', temp: temp?.toFixed(1) ?? '—',
+    crop: crop ?? 'your active crop', region, farm_size: farmSize,
+    budget, district: district || 'your district',
+    month: months[new Date().getMonth()],
+    ph_advice: phAdvice, ph_rating: phRating, ph_direction: !ph ? 'unknown' : ph < 7 ? 'acidic' : ph > 7 ? 'alkaline' : 'neutral',
+    lime_total: limeTotal, compound_d_total: farmSize * 200, an_total: farmSize * 200,
+    maize_seed_total: farmSize * 25,
+    maize_total_yield: farmSize * 2500,
+    maize_revenue: (farmSize * 2500 * 0.28).toFixed(0),
+    beans_revenue: (farmSize * 900 * 0.65).toFixed(0),
+    faw_organic_cost: (farmSize * 12).toFixed(2),
+    expected_yield: farmSize * 2500, market_price: 0.28,
+    gross_revenue: (farmSize * 2500 * 0.28).toFixed(0),
+    net_profit: (farmSize * 2500 * 0.28 * 0.35).toFixed(0),
+    top_crop: 'Sugar beans', top_score: '89', days_planted: 35,
+    irrigation_status: 'rain-fed only',
+    region_soil_type: ({1:'deep red clay loams',2:'deep red and brown clay loams',
+      3:'sandy clay loams',4:'sandy and sandy loam soils',5:'coarse sandy soils'})[region] ?? 'mixed soils',
+    region_traditional_crops: ({1:'potatoes, cabbages, wheat, tea',
+      2:'maize, tobacco, groundnuts, cotton',3:'maize, sorghum, groundnuts',
+      4:'sorghum, pearl millet, cowpeas',5:'pearl millet, sesame, cowpeas'})[region] ?? 'various crops',
+    seed_rec: budget === 'low' ? 'ZM521 (OPV — save seed)' : 'SC403 (hybrid)',
+    seed_type_rec: budget === 'low' ? 'OPV varieties (can save seed)' : 'Hybrid varieties (higher yield)',
+    lime_urgency: ph && ph < 5.8 ? 'Apply lime before next planting — urgent' : 'pH acceptable — retest next season',
+    germ_temp_status: temp && temp >= 15 && temp <= 35 ? 'suitable for germination' : 'check temperature before planting',
+  };
 }
 
-function Bubble({ message }: BubbleProps) {
+function Bubble({ message }: { message: ChatMessage }) {
   const isAI = message.role === 'assistant';
   return (
-    <View style={[bubbleStyles.wrap, isAI ? bubbleStyles.wrapAI : bubbleStyles.wrapUser]}>
-      <View style={[bubbleStyles.bubble, isAI ? bubbleStyles.bubbleAI : bubbleStyles.bubbleUser]}>
-        <Text style={[bubbleStyles.text, isAI ? bubbleStyles.textAI : bubbleStyles.textUser]}>
-          {message.content}
-        </Text>
-        {isAI && message.farmData && <ContextChips farmData={message.farmData} />}
+    <View style={[bStyles.wrap, isAI ? bStyles.wrapAI : bStyles.wrapUser]}>
+      <View style={[bStyles.bubble, isAI ? bStyles.bubbleAI : bStyles.bubbleUser]}>
+        <Text style={[bStyles.text, isAI ? bStyles.textAI : bStyles.textUser]}>{message.content}</Text>
       </View>
-      <Text style={[bubbleStyles.time, !isAI && { textAlign: 'right' }]}>
+      <Text style={[bStyles.time, !isAI && { textAlign: 'right' }]}>
         {new Date(message.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
-        {message.farmData ? ' · Reading farm data' : ''}
       </Text>
     </View>
   );
 }
 
-// ── Typing indicator ───────────────────────────────────────────────────────────
-function TypingIndicator() {
+function OfflinePanel({ onSelect, farmData }: { onSelect: (q: string, a: string) => void; farmData: Record<string, unknown> }) {
+  const [cat, setCat] = useState<string | null>(null);
+  const questions = cat ? ALL_QA.filter(q => q.category === cat) : [];
   return (
-    <View style={[bubbleStyles.wrap, bubbleStyles.wrapAI]}>
-      <View style={[bubbleStyles.bubble, bubbleStyles.bubbleAI, { paddingVertical: 12 }]}>
-        <View style={typStyles.row}>
-          {[0, 1, 2].map((i) => (
-            <View key={i} style={typStyles.dot} />
-          ))}
+    <View style={oStyles.panel}>
+      <View style={oStyles.header}>
+        <Text style={{ fontSize: 20 }}>📚</Text>
+        <View>
+          <Text style={oStyles.title}>Offline farming guide</Text>
+          <Text style={oStyles.sub}>486 questions · Tap a topic then tap a question</Text>
         </View>
       </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={oStyles.catRow}>
+        {CATEGORIES.map(c => (
+          <TouchableOpacity key={c} style={[oStyles.chip, cat === c && oStyles.chipActive]} onPress={() => setCat(cat === c ? null : c)} activeOpacity={0.7}>
+            <Text style={[oStyles.chipText, cat === c && oStyles.chipTextActive]}>{c}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      {cat && (
+        <ScrollView style={{ maxHeight: 200 }} showsVerticalScrollIndicator={false} nestedScrollEnabled>
+          {questions.map((item, i) => (
+            <TouchableOpacity key={i} style={oStyles.qRow} onPress={() => onSelect(item.question, fillTemplate(item.answer, farmData))} activeOpacity={0.7}>
+              <Text style={oStyles.qText}>{item.question}</Text>
+              <Text style={{ fontSize: 18, color: Colors.slate300 }}>›</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+      {!cat && <View style={{ padding: 14, alignItems: 'center' }}><Text style={{ fontSize: 13, color: Colors.slate400 }}>Select a topic above</Text></View>}
     </View>
   );
 }
 
-// ── Generate AI greeting from farm data ───────────────────────────────────────
-function buildGreeting(
-  ph: number | null,
-  moisture: number | null,
-  temp: number | null,
-  cropName: string | null,
-  farmSizeHa: number
-): string {
-  let msg = `Hello! I have access to your farm data. Here is what I can see right now:\n\n`;
-
-  if (ph !== null) {
-    if (ph < 5.5) {
-      msg += `⚠ Your soil pH is ${ph.toFixed(1)} — below the minimum for most crops (5.5). `;
-      msg += `This is your most urgent issue. I recommend applying agricultural lime before planting. `;
-      msg += `Would you like me to calculate exactly how much lime you need for your ${farmSizeHa} ha?`;
-    } else if (ph < 6.0) {
-      msg += `Your soil pH is ${ph.toFixed(1)} — slightly below the optimal range of 6.0–6.5 for most crops. `;
-      msg += `Consider a light lime application to bring this up. `;
-      msg += `Your moisture at ${moisture}% looks good. What would you like to know?`;
-    } else {
-      msg += `Your soil conditions look good — pH ${ph.toFixed(1)}, moisture ${moisture}%, temperature ${temp}°C. `;
-      if (cropName) {
-        msg += `Your ${cropName} is progressing well. What can I help you with today?`;
-      } else {
-        msg += `What can I help you with today?`;
-      }
-    }
-  } else {
-    msg += `I don't have live sensor readings yet — make sure your sensor is paired in Settings. `;
-    msg += `I can still help you with general farming advice. What would you like to know?`;
-  }
-
-  return msg;
-}
-
-// ── Build context for AI call ──────────────────────────────────────────────────
-function buildContext(
-  ph: number | null,
-  moisture: number | null,
-  temp: number | null,
-  cropName: string | null,
-  region: number,
-  farmSizeHa: number,
-  budgetLevel: string
-): Record<string, unknown> {
-  return {
-    soil_ph:         ph,
-    moisture_pct:    moisture,
-    temp_c:          temp,
-    active_crop:     cropName,
-    agro_region:     region,
-    farm_size_ha:    farmSizeHa,
-    budget_level:    budgetLevel,
-    current_month:   new Date().toLocaleString('en-ZW', { month: 'long' }),
-  };
-}
-
-// ── Main screen ───────────────────────────────────────────────────────────────
 export function ChatScreen() {
-  const insets = useSafeAreaInsets();
+  const insets    = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
-
-  const messages     = useAppStore((s) => s.chatMessages);
-  const addMessage   = useAppStore((s) => s.addChatMessage);
-  const sensor       = useAppStore((s) => s.sensorReading);
-  const activeCrop   = useAppStore((s) => s.activeCrop);
-  const profile      = useAppStore((s) => s.profile);
-  const isOnline     = useAppStore((s) => s.isOnline);
-
+  const messages   = useAppStore((s) => s.chatMessages);
+  const addMessage = useAppStore((s) => s.addChatMessage);
+  const sensor     = useAppStore((s) => s.sensorReading);
+  const activeCrop = useAppStore((s) => s.activeCrop);
+  const profile    = useAppStore((s) => s.profile);
+  const isOnline   = useAppStore((s) => s.isOnline);
+  const { t }      = useTranslation();
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping]   = useState(false);
 
-  // Initialise greeting on first open
-  const hasGreeting = messages.length > 0;
-
-  const greeting = buildGreeting(
-    sensor?.soil_ph ?? null,
-    sensor?.moisture_pct ?? null,
-    sensor?.temp_c ?? null,
-    activeCrop?.crop_name ?? null,
-    profile?.farm_size_ha ?? 2.4
+  const farmData = buildFarmData(
+    sensor?.soil_ph ?? null, sensor?.moisture_pct ?? null, sensor?.temp_c ?? null,
+    activeCrop?.crop_name ?? null, profile?.agro_region ?? 2,
+    profile?.farm_size_ha ?? 2.4, profile?.budget_level ?? 'low', profile?.district ?? '',
   );
 
-  const farmData = {
-    ph:       sensor?.soil_ph?.toFixed(1) ?? null,
-    moisture: sensor?.moisture_pct ?? null,
-    temp:     sensor?.temp_c?.toFixed(0) ?? null,
-    crop:     activeCrop ? `${activeCrop.crop_name} Day ${Math.floor((Date.now() - new Date(activeCrop.planting_date).getTime()) / 86400000)}` : null,
-  };
+  const ph = sensor?.soil_ph;
+  const greeting = `Hello! I am MDUMENI, your AI farming guide.\n\n`
+    + `Your farm right now:\n`
+    + (ph ? `• Soil pH: ${ph.toFixed(1)} — ${ph < 5.5 ? '⚠ acidic, lime needed' : '✅ good range'}\n` : '')
+    + (sensor?.moisture_pct ? `• Moisture: ${sensor.moisture_pct}%\n` : '')
+    + (activeCrop?.crop_name ? `• Active crop: ${activeCrop.crop_name}\n` : '')
+    + `• ${profile?.farm_size_ha ?? 2.4} ha · Region ${profile?.agro_region ?? 2} · ${profile?.budget_level ?? 'low'} input\n\n`
+    + (isOnline
+      ? `I am online — ask me any farming question and I will give you a personalised answer.`
+      : `You are offline. Browse the 486-question farming guide below — each answer is personalised for your farm.`);
 
-  // Offline AI fallback responses
-  const OFFLINE_RESPONSES: Record<string, string> = {
-    'Best rotation after maize?':
-      `After maize, plant sugar beans or groundnuts next season. Both fix nitrogen back into your soil after maize depletes it.\n\nWith your current pH ${sensor?.soil_ph?.toFixed(1) ?? '5.1'}, sugar beans are the better choice — they tolerate slightly more acidic soil than groundnuts.\n\nExpected benefit: 15–20% better maize yield in the following season.`,
-    'Fall Armyworm treatment?':
-      `For organic treatment (your budget level):\n\nBacillus thuringiensis (Bt) DiPel — 1 kg/ha in 200L water. Apply directly into the whorl before caterpillars enter. Treat within 24 hours if more than 30% of plants show frass.\n\nRepeat after 5 days.\n\nCost for your ${profile?.farm_size_ha ?? 2.4} ha: approximately $${((profile?.farm_size_ha ?? 2.4) * 12).toFixed(2)}.`,
-    'When should I harvest?':
-      `Based on your planting date and ZM521 maturity of 120 days, look for:\n\n• Dry husk papering back from the cob\n• Black layer forming at the grain base\n• Grain moisture below 25%\n\nYour sensor moisture readings will drop as the plant nears maturity — watch for consistent readings below 50%.`,
-    'How much lime do I need?':
-      `For your ${profile?.farm_size_ha ?? 2.4} ha at pH ${sensor?.soil_ph?.toFixed(1) ?? '5.1'}:\n\n• Apply 250 kg/ha of agricultural lime\n• Total for your farm: ${((profile?.farm_size_ha ?? 2.4) * 250).toFixed(0)} kg\n• Broadcast evenly and incorporate with a disc\n• Recheck pH after 14 days\n\nEstimated cost: $${((profile?.farm_size_ha ?? 2.4) * 7.5).toFixed(2)}–$${((profile?.farm_size_ha ?? 2.4) * 10).toFixed(2)}`,
-    'Improve my profit?':
-      `Three quick wins based on your data:\n\n1. Fix the pH now — lime costs $${((profile?.farm_size_ha ?? 2.4) * 8).toFixed(0)} but protects $200+ of yield\n\n2. Add sugar beans alongside maize — they sell at $0.65/kg vs $0.28/kg for maize\n\n3. Store in hermetic bags — reduces post-harvest loss from 15% to under 2%\n\nThese three changes alone could raise your seasonal profit by $150–200.`,
-  };
-
-  const DEFAULT_RESPONSE =
-    `I've noted your question and checked your farm data (pH ${sensor?.soil_ph?.toFixed(1) ?? '—'}, ${activeCrop?.crop_name ?? 'no active crop'}, ${profile?.farm_size_ha ?? 2.4} ha, Region ${profile?.agro_region ?? '?'}).\n\nFor the most accurate advice, connect to the internet so I can run a full analysis through the MDUMENI AI engines. In the meantime, check the Calendar tab for today's specific tasks.`;
-
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, offlineAnswer?: string) => {
     const trimmed = text.trim();
     if (!trimmed || isTyping) return;
-
-    const userMsg: ChatMessage = {
-      id:        Date.now().toString(),
-      role:      'user',
-      content:   trimmed,
-      timestamp: new Date().toISOString(),
-    };
-    addMessage(userMsg);
+    addMessage({ id: Date.now().toString(), role: 'user', content: trimmed, timestamp: new Date().toISOString() });
     setInputText('');
     setIsTyping(true);
-
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-
     try {
-      let responseText: string;
-
-      if (isOnline) {
-        const ctx = buildContext(
-          sensor?.soil_ph ?? null,
-          sensor?.moisture_pct ?? null,
-          sensor?.temp_c ?? null,
-          activeCrop?.crop_name ?? null,
-          profile?.agro_region ?? 2,
-          profile?.farm_size_ha ?? 2.4,
-          profile?.budget_level ?? 'low'
-        );
+      let res: string;
+      if (offlineAnswer) {
+        res = offlineAnswer;
+      } else if (isOnline) {
         try {
-          responseText = await callAIChat(trimmed, ctx);
+          res = await callAIChat(trimmed, {
+            soil_ph: sensor?.soil_ph, moisture_pct: sensor?.moisture_pct,
+            temp_c: sensor?.temp_c, active_crop: activeCrop?.crop_name,
+            agro_region: profile?.agro_region ?? 2,
+            farm_size_ha: profile?.farm_size_ha ?? 2.4,
+            budget_level: profile?.budget_level ?? 'low',
+            current_month: new Date().toLocaleString('en', { month: 'long' }),
+          });
         } catch {
-          // API not live yet — use offline responses
-          responseText = OFFLINE_RESPONSES[trimmed] ?? DEFAULT_RESPONSE;
+          res = `Could not reach the AI server right now. Try again in a moment, or turn off WiFi to browse the offline guide.`;
         }
       } else {
-        // Offline — use prebuilt responses
-        responseText = OFFLINE_RESPONSES[trimmed] ?? DEFAULT_RESPONSE;
+        res = `You are offline. Browse the farming guide below to find answers personalised for your farm.`;
       }
-
-      const aiMsg: ChatMessage = {
-        id:        (Date.now() + 1).toString(),
-        role:      'assistant',
-        content:   responseText,
-        timestamp: new Date().toISOString(),
-      };
-      addMessage(aiMsg);
-    } catch {
-      const errMsg: ChatMessage = {
-        id:        (Date.now() + 1).toString(),
-        role:      'assistant',
-        content:   'I could not get a response right now. Please check your connection and try again.',
-        timestamp: new Date().toISOString(),
-      };
-      addMessage(errMsg);
+      addMessage({ id: (Date.now() + 1).toString(), role: 'assistant', content: res, timestamp: new Date().toISOString() });
     } finally {
       setIsTyping(false);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 200);
@@ -251,208 +178,93 @@ export function ChatScreen() {
   }, [isTyping, isOnline, sensor, activeCrop, profile, addMessage]);
 
   return (
+    // Replace with:
     <KeyboardAvoidingView
-      style={styles.screen}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={0}
+      style={s.screen}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'android' ? 90 : 0}
     >
-      {/* ── Chat header ─────────────────────────────────────────────────── */}
-      <View style={[styles.chatHeader, { paddingTop: insets.top + 6 }]}>
-        <View style={styles.aiAvatar}>
-          <Text style={styles.aiEmoji}>🤖</Text>
-        </View>
+      <View style={[s.header, { paddingTop: insets.top + 6 }]}>
+        <View style={s.avatar}><Text style={{ fontSize: 20 }}>🤖</Text></View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.aiName}>MDUMENI Assistant</Text>
-          <Text style={styles.aiStatus}>
-            {isOnline ? 'Online · Reads your farm data' : 'Offline · Using cached responses'}
-          </Text>
+          <Text style={s.headerTitle}>MDUMENI Assistant</Text>
+          <Text style={s.headerSub}>{isOnline ? t('chat.online_sub') : t('chat.offline_sub')}</Text>
         </View>
-        <View style={styles.aiBadge}>
-          <Text style={styles.aiBadgeText}>AI</Text>
+        <View style={[s.badge, { backgroundColor: isOnline ? Colors.green600 : Colors.slate400 }]}>
+          <Text style={s.badgeText}>{isOnline ? 'AI' : 'GUIDE'}</Text>
         </View>
       </View>
 
-      {/* ── Messages ─────────────────────────────────────────────────────── */}
-      <ScrollView
-        ref={scrollRef}
-        style={styles.body}
-        contentContainerStyle={styles.bodyContent}
-        showsVerticalScrollIndicator={false}
-        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
-      >
-        {/* Greeting (always first) */}
-        <Bubble
-          message={{
-            id:        'greeting',
-            role:      'assistant',
-            content:   greeting,
-            timestamp: new Date().toISOString(),
-            farmData,
-          }}
-        />
-
-        {/* All subsequent messages */}
-        {messages.map((msg) => (
-          <Bubble key={msg.id} message={msg} />
-        ))}
-
-        {/* Typing indicator */}
-        {isTyping && <TypingIndicator />}
+      <ScrollView ref={scrollRef} style={s.body} contentContainerStyle={s.bodyContent}
+        showsVerticalScrollIndicator={false} onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
+        keyboardShouldPersistTaps="handled">
+        <Bubble message={{ id: 'greeting', role: 'assistant', content: greeting, timestamp: new Date().toISOString() }} />
+        {messages.map(m => <Bubble key={m.id} message={m} />)}
+        {isTyping && (
+          <View style={[bStyles.wrap, bStyles.wrapAI]}>
+            <View style={[bStyles.bubble, bStyles.bubbleAI, { paddingVertical: 14 }]}>
+              <View style={{ flexDirection: 'row', gap: 5 }}>
+                {[0,1,2].map(i => <View key={i} style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: Colors.slate300 }} />)}
+              </View>
+            </View>
+          </View>
+        )}
       </ScrollView>
 
-      {/* ── Quick questions ───────────────────────────────────────────────── */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.quickRow}
-        contentContainerStyle={styles.quickContent}
-      >
-        {QUICK_QUESTIONS.map((q) => (
+      {!isOnline && <OfflinePanel onSelect={(q, a) => sendMessage(q, a)} farmData={farmData} />}
+
+      {isOnline && (
+        <View style={[s.inputRow, { paddingBottom: insets.bottom + 8 }]}>
+          <TextInput
+            style={s.input} value={inputText} onChangeText={setInputText}
+            placeholder="Ask any farming question..." placeholderTextColor={Colors.slate300}
+            multiline maxLength={500} editable={!isTyping}
+          />
           <TouchableOpacity
-            key={q}
-            style={styles.quickChip}
-            onPress={() => sendMessage(q)}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.quickText}>{q}</Text>
+            style={[s.sendBtn, (!inputText.trim() || isTyping) && s.sendBtnOff]}
+            onPress={() => sendMessage(inputText)} disabled={!inputText.trim() || isTyping} activeOpacity={0.8}>
+            {isTyping ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={s.sendIcon}>→</Text>}
           </TouchableOpacity>
-        ))}
-      </ScrollView>
-
-      {/* ── Input row ────────────────────────────────────────────────────── */}
-      <View style={[styles.inputRow, { paddingBottom: insets.bottom + 8 }]}>
-        <TextInput
-          style={styles.input}
-          value={inputText}
-          onChangeText={setInputText}
-          placeholder="Ask any farming question..."
-          placeholderTextColor={Colors.slate300}
-          multiline
-          maxLength={500}
-          returnKeyType="send"
-          onSubmitEditing={() => sendMessage(inputText)}
-          editable={!isTyping}
-        />
-        <TouchableOpacity
-          style={[styles.sendBtn, isTyping && styles.sendBtnDisabled]}
-          onPress={() => sendMessage(inputText)}
-          disabled={isTyping || !inputText.trim()}
-          activeOpacity={0.8}
-        >
-          {isTyping
-            ? <ActivityIndicator size="small" color={Colors.white} />
-            : <Text style={styles.sendIcon}>→</Text>
-          }
-        </TouchableOpacity>
-      </View>
+        </View>
+      )}
     </KeyboardAvoidingView>
   );
 }
 
-// ── Styles ─────────────────────────────────────────────────────────────────────
-const styles = StyleSheet.create({
-  screen:  { flex: 1, backgroundColor: Colors.slate050 },
-  chatHeader: {
-    backgroundColor: Colors.green600,
-    paddingHorizontal: Spacing[4],
-    paddingBottom: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  aiAvatar: {
-    width: 38, height: 38,
-    backgroundColor: Colors.amber500,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  aiEmoji:   { fontSize: 20 },
-  aiName:    { fontSize: 15, fontWeight: '700', color: Colors.white },
-  aiStatus:  { fontSize: 11, color: Colors.green200, marginTop: 1 },
-  aiBadge:   { backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 3 },
-  aiBadgeText: { fontSize: 11, fontWeight: '700', color: Colors.white },
+const s = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: Colors.slate050 },
+  header: { backgroundColor: Colors.green600, paddingHorizontal: Spacing[4], paddingBottom: 14, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  avatar: { width: 38, height: 38, backgroundColor: Colors.amber500, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  headerTitle: { fontSize: 15, fontWeight: '700', color: Colors.white },
+  headerSub:   { fontSize: 11, color: Colors.green200, marginTop: 1 },
+  badge:       { borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3 },
+  badgeText:   { fontSize: 11, fontWeight: '700', color: Colors.white },
   body:        { flex: 1 },
   bodyContent: { paddingVertical: 14, paddingHorizontal: 14, gap: 10 },
-  quickRow:    { backgroundColor: Colors.white, borderTopWidth: 1, borderTopColor: Colors.slate100 },
-  quickContent: { paddingHorizontal: 14, paddingVertical: 8, gap: 6 },
-  quickChip:   {
-    paddingHorizontal: 12, paddingVertical: 7,
-    borderRadius: 20,
-    borderWidth: 1.5,
-    borderColor: Colors.green200,
-    backgroundColor: Colors.white,
-  },
-  quickText: { fontSize: 12, fontWeight: '600', color: Colors.green700,  },
-  inputRow:  {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 8,
-    backgroundColor: Colors.white,
-    borderTopWidth: 1,
-    borderTopColor: Colors.slate100,
-    paddingHorizontal: 14,
-    paddingTop: 10,
-  },
-  input: {
-    flex: 1,
-    borderWidth: 1.5,
-    borderColor: Colors.slate100,
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    fontSize: 14,
-    color: Colors.slate900,
-    backgroundColor: Colors.slate050,
-    maxHeight: 100,
-  },
-  sendBtn: {
-    width: 38, height: 38,
-    backgroundColor: Colors.green600,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-    ...Shadows.sm,
-  },
-  sendBtnDisabled: { backgroundColor: Colors.slate200 },
-  sendIcon: { fontSize: 18, fontWeight: '700', color: Colors.white },
+  inputRow:    { flexDirection: 'row', alignItems: 'flex-end', gap: 8, backgroundColor: Colors.white, borderTopWidth: 1, borderTopColor: Colors.slate100, paddingHorizontal: 14, paddingTop: 10 },
+  input:       { flex: 1, borderWidth: 1.5, borderColor: Colors.slate100, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9, fontSize: 14, color: Colors.slate900, backgroundColor: Colors.slate050, maxHeight: 100 },
+  sendBtn:     { width: 38, height: 38, backgroundColor: Colors.green600, borderRadius: 19, alignItems: 'center', justifyContent: 'center', ...Shadows.sm },
+  sendBtnOff:  { backgroundColor: Colors.slate200 },
+  sendIcon:    { fontSize: 18, fontWeight: '700', color: Colors.white },
 });
-
-const bubbleStyles = StyleSheet.create({
-  wrap:     { maxWidth: '85%', gap: 3 },
-  wrapAI:   { alignSelf: 'flex-start' },
-  wrapUser: { alignSelf: 'flex-end' },
-  bubble: {
-    borderRadius: 16,
-    paddingHorizontal: 13,
-    paddingVertical: 10,
-  },
-  bubbleAI: {
-    backgroundColor: Colors.white,
-    borderTopLeftRadius: 4,
-    ...Shadows.sm,
-  },
-  bubbleUser: {
-    backgroundColor: Colors.green600,
-    borderTopRightRadius: 4,
-  },
-  text:     { fontSize: 14, lineHeight: 21,  },
-  textAI:   { color: Colors.slate900 },
-  textUser: { color: Colors.white },
-  time:     { fontSize: 10, color: Colors.slate300, paddingHorizontal: 4 },
+const bStyles = StyleSheet.create({
+  wrap: { maxWidth: '85%', gap: 3 }, wrapAI: { alignSelf: 'flex-start' }, wrapUser: { alignSelf: 'flex-end' },
+  bubble: { borderRadius: 16, paddingHorizontal: 13, paddingVertical: 10 },
+  bubbleAI: { backgroundColor: Colors.white, borderTopLeftRadius: 4, ...Shadows.sm },
+  bubbleUser: { backgroundColor: Colors.green600, borderTopRightRadius: 4 },
+  text: { fontSize: 14, lineHeight: 21 }, textAI: { color: Colors.slate900 }, textUser: { color: Colors.white },
+  time: { fontSize: 10, color: Colors.slate300, paddingHorizontal: 4 },
 });
-
-const chipStyles = StyleSheet.create({
-  row:  { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 8 },
-  chip: { backgroundColor: Colors.green050, borderWidth: 1, borderColor: Colors.green100, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
-  chipWarn: { backgroundColor: Colors.amber100, borderColor: 'rgba(239,159,39,0.3)' },
-  text:     { fontSize: 11, color: Colors.green700, fontWeight: '500' },
-  textWarn: { color: Colors.amber700 },
-});
-
-const typStyles = StyleSheet.create({
-  row: { flexDirection: 'row', gap: 4, alignItems: 'center' },
-  dot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: Colors.slate300 },
+const oStyles = StyleSheet.create({
+  panel: { backgroundColor: Colors.white, borderTopWidth: 1, borderTopColor: Colors.slate100, maxHeight: 340 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderBottomWidth: 1, borderBottomColor: Colors.slate050 },
+  title: { fontSize: 13, fontWeight: '700', color: Colors.slate900 },
+  sub:   { fontSize: 11, color: Colors.slate400, marginTop: 1 },
+  catRow: { paddingHorizontal: 12, paddingVertical: 8, gap: 6 },
+  chip:  { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1.5, borderColor: Colors.slate100, backgroundColor: Colors.slate050 },
+  chipActive: { backgroundColor: Colors.green600, borderColor: Colors.green600 },
+  chipText:   { fontSize: 12, fontWeight: '500', color: Colors.slate600 },
+  chipTextActive: { color: Colors.white, fontWeight: '700' },
+  qRow:  { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 11, paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: Colors.slate050 },
+  qText: { flex: 1, fontSize: 13, color: Colors.slate800, lineHeight: 18 },
 });

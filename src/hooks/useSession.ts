@@ -10,6 +10,8 @@ import { useAppStore } from '@/store';
 import { callSession } from '@/services/api';
 import { setCacheEntry, getCacheEntry } from '@/db/database';
 import type { SessionRequest, SessionResponse } from '@/types';
+import { recommend } from '@/engines/cropEngine';
+import { threats } from '@/engines/pestEngine';
 
 const CACHE_KEY = 'session_latest';
 const CACHE_TTL = 24 * 60 * 60; // 24 hours
@@ -76,6 +78,38 @@ export function useSession() {
   }, [db, profile, sensorReading, activeCrop, isOnline, setSession, setSessionLoading, setSessionError]);
 
   return { refresh };
+}
+
+// ── Run JS engines on-device (true offline AI) ───────────────────────────────
+function runLocalEngines(req: SessionRequest): SessionResponse {
+  try {
+    // Engine 1: Crop recommendations
+    const cropResult = recommend({
+      soil_ph:           req.soil_ph,
+      soil_moisture_pct: req.soil_moisture_pct,
+      soil_temp_c:       req.soil_temp_c,
+      agro_region:       req.agro_region,
+      has_irrigation:    req.has_irrigation,
+      budget_level:      req.budget_level,
+      planting_month:    req.planting_month,
+      farm_size_ha:      req.farm_size_ha,
+    }, 5);
+
+    // Engine 4: Pest & disease threats (if active crop)
+    const threatResult = req.active_crop_id
+      ? threats(req.active_crop_id, req.planting_month)
+      : undefined;
+
+    return {
+      crop_recommendations: cropResult as any,
+      crop_threats:         threatResult as any,
+      generated_at:         new Date().toISOString(),
+      from_cache:           false,
+    };
+  } catch (e) {
+    console.error('JS engine error:', e);
+    return buildFallbackSession(req);
+  }
 }
 
 // ── Fallback session when offline + no cache ──────────────────────────────────

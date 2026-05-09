@@ -3,6 +3,7 @@
 // All active-crop data in one place — reduces nav duplication
 
 import React, { useState } from 'react';
+import { useNavigation } from '@react-navigation/native';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
 } from 'react-native';
@@ -19,6 +20,7 @@ const TABS = [
   { key: 'advice',   label: 'Crop advice' },
   { key: 'pests',    label: 'Pests'       },
 ] as const;
+
 
 type TabKey = typeof TABS[number]['key'];
 
@@ -91,18 +93,41 @@ function CalendarTab() {
   if (!calendar) {
     return (
       <ScrollView>
-        <EmptyState
-          icon="📅"
-          title="No active crop"
-          message="Select a crop in the Crop Advice tab to see your farming calendar."
-        />
+        <Text>No active crop set</Text>
+
+        <View style={{ alignItems: 'center', padding: 24 }}>
+          <Text style={{ fontSize: 16, color: Colors.slate400, marginBottom: 16 }}>
+            No active crop set
+          </Text>
+          <TouchableOpacity
+            style={{ backgroundColor: Colors.green600, borderRadius: 10, paddingHorizontal: 20, paddingVertical: 12 }}
+            onPress={() => {
+              // Navigate to Settings — easiest approach
+              navigation.navigate('Settings');
+            }}
+          >
+            <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
+              Set active crop →
+            </Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
     );
   }
-
+  const navigation  = useNavigation<any>();
   const phase       = calendar.current_phase;
   const critical    = alerts.filter((a) => a.severity === 'critical');
   const warnings    = alerts.filter((a) => a.severity === 'warning');
+  const TASK_TITLES: Record<string, string> = {
+    pest_check:       'Scout for pests',
+    fertiliser:       'Apply fertiliser',
+    irrigation:       'Irrigation check',
+    weed_control:     'Weed control',
+    soil_check:       'Soil check',
+    harvest_prep:     'Prepare for harvest',
+    planting:         'Planting',
+    land_preparation: 'Land preparation',
+  };
 
   return (
     <ScrollView showsVerticalScrollIndicator={false}>
@@ -134,23 +159,43 @@ function CalendarTab() {
         <AlertStrip key={i} message={a.message} severity="warning" />
       ))}
 
-      {/* Today's tasks */}
-      <SectionTitle label="Today's tasks" />
-      {calendar.tasks_today.length > 0 ? (
-        calendar.tasks_today.map((task, i) => (
-          <TaskCard
-            key={i}
-            title={task.title}
-            description={task.description}
-            type={task.type}
-            dueLabel={task.priority === 'high' ? 'Due today' : undefined}
-          />
-        ))
-      ) : (
-        <Card>
-          <EmptyState icon="✅" title="No tasks today" message="Check upcoming tasks below." />
-        </Card>
-      )}
+       {/* Today's tasks */}
+    <SectionTitle label="Today's tasks" />
+
+    {calendar?.tasks_today?.length > 0 ? (
+      calendar.tasks_today.map((task, i) => (
+        <TaskCard
+          key={i}
+          title={
+            task.title ??
+            TASK_TITLES[task.type] ??
+            task.type
+              ?.replace(/_/g, ' ')
+              .replace(/\b\w/g, (c: string) => c.toUpperCase()) ??
+            'Task'
+          }
+          description={
+            task.description ??
+            task.message ??
+            ''
+          }
+          type={task.type}
+          dueLabel={
+            task.priority === 'high'
+              ? 'Due today'
+              : undefined
+          }
+        />
+      ))
+    ) : (
+      <Card>
+        <EmptyState
+          icon="✅"
+          title="No tasks today"
+          message="Check upcoming tasks below."
+        />
+      </Card>
+    )}
 
       {/* Upcoming */}
       {calendar.tasks_upcoming.length > 0 && (
