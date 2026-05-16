@@ -272,6 +272,11 @@ export type RootTabParamList = {
   Analytics: undefined;
   Chat:      undefined;
   Settings:  undefined;
+  Market: undefined;
+  Plan: undefined;
+  MyFarm: undefined;
+  More: undefined;
+
 };
 
 export type CalendarSubTab = 'calendar' | 'advice' | 'pests';

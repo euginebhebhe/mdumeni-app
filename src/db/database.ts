@@ -113,7 +113,7 @@ export async function saveProfile(
   });
   await db.runAsync(
     `UPDATE farmer_profile SET ${setClauses}, updated_at = datetime('now') WHERE id = 1`,
-    values
+    values as any
   );
 }
 

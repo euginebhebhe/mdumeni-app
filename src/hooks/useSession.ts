@@ -77,7 +77,7 @@ export function useSession() {
     }
   }, [db, profile, sensorReading, activeCrop, isOnline, setSession, setSessionLoading, setSessionError]);
 
-  return { refresh };
+  return { refresh, Loading: useAppStore((s) => s.sessionLoading), error: useAppStore((s) => s.sessionError) };
 }
 
 // ── Run JS engines on-device (true offline AI) ───────────────────────────────

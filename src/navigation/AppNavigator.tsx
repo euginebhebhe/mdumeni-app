@@ -17,15 +17,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppHeader } from '@/components/ui';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { useAppStore } from '@/store';
+import { prefetchAllPrices } from '@/services/priceCache';
 import { Colors, BorderRadius } from '@/constants/theme';
 import type { RootTabParamList } from '@/types';
 
 // Screen imports (each screen is its own file)
-import { HomeScreen }      from '@/screens/HomeScreen';
-import { CalendarScreen }  from '@/screens/CalendarScreen';
-import { AnalyticsScreen } from '@/screens/AnalyticsScreen';
-import { ChatScreen }      from '@/screens/ChatScreen';
-import { SettingsScreen }  from '@/screens/SettingsScreen';
+import { HomeScreen }       from '@/screens/HomeScreen';
+import { MarketScreen }      from '@/screens/MarketScreen';
+import { PlanScreen }        from '@/screens/PlanScreen';
+import { MyFarmScreen }      from '@/screens/MyFarmScreen';
+import { MoreScreen }        from '@/screens/MoreScreen';
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
 
@@ -161,52 +162,51 @@ export function AppNavigator() {
             ),
           }}
         >
-          {() => <WithHeader screen={HomeScreen} />}
+          {() => <WithHeader screen={HomeScreen} showHeader={false} />}
         </Tab.Screen>
 
         <Tab.Screen
-          name="Calendar"
+          name="Market"
           options={{
             tabBarIcon: ({ focused }) => (
-              <TabIcon emoji="📅" label="Calendar" focused={focused} />
+              <TabIcon emoji="📈" label="Market" focused={focused} />
             ),
           }}
         >
-          {() => <WithHeader screen={CalendarScreen} />}
+          {() => <WithHeader screen={MarketScreen} showHeader={false} />}
         </Tab.Screen>
 
         <Tab.Screen
-          name="Analytics"
+          name="Plan"
           options={{
             tabBarIcon: ({ focused }) => (
-              <TabIcon emoji="📊" label="Analytics" focused={focused}
-                badge={criticalAlerts} />
+              <TabIcon emoji="🧮" label="Plan" focused={focused} />
             ),
           }}
         >
-          {() => <WithHeader screen={AnalyticsScreen} />}
+          {() => <WithHeader screen={PlanScreen} showHeader={false} />}
         </Tab.Screen>
 
         <Tab.Screen
-          name="Chat"
+          name="MyFarm"
           options={{
             tabBarIcon: ({ focused }) => (
-              <TabIcon emoji="💬" label="AI Chat" focused={focused} />
+              <TabIcon emoji="🌱" label="My Farm" focused={focused} />
             ),
           }}
         >
-          {() => <WithHeader screen={ChatScreen} showHeader={false} />}
+          {() => <WithHeader screen={MyFarmScreen} showHeader={false} />}
         </Tab.Screen>
 
         <Tab.Screen
-          name="Settings"
+          name="More"
           options={{
             tabBarIcon: ({ focused }) => (
-              <TabIcon emoji="⚙️" label="Settings" focused={focused} />
+              <TabIcon emoji="⋯" label="More" focused={focused} />
             ),
           }}
         >
-          {() => <WithHeader screen={SettingsScreen} />}
+          {() => <WithHeader screen={MoreScreen} showHeader={false} />}
         </Tab.Screen>
       </Tab.Navigator>
     </NavigationContainer>
