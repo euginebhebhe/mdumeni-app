@@ -40,7 +40,7 @@ export function AppHeader({ farmName = "My Farm", region = "" }: AppHeaderProps)
       <View style={styles.headerLeft}>
         <View style={styles.logoIcon}>
           <Image
-            source={require('/assets/icon.png')}
+            source={require('../../assets/icon.png')}
             style={{
               width: 38,
               height: 42,
@@ -284,7 +284,7 @@ export function LoadingSpinner({ message = 'Loading...' }: { message?: string })
   return (
     <View style={styles.loadingWrap}>
       <Image
-        source={require('/assets/icon.png')}
+        source={require('../../assets/icon.png')}
         style={{
           width: 32,
           height: 32,

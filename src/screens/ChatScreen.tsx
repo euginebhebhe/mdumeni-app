@@ -27,6 +27,7 @@ function buildFarmData(
   ph: number | null, moisture: number | null, temp: number | null,
   crop: string | null, region: number, farmSize: number,
   budget: string, district: string,
+  overrides: Partial<Record<string, unknown>> = {},
 ): Record<string, unknown> {
   const phAdvice = !ph ? '' : ph < 5.0 ? 'Very acidic — lime urgently needed before planting.'
     : ph < 5.5 ? 'Acidic — apply lime at 250 kg/ha before planting.'
@@ -48,6 +49,7 @@ function buildFarmData(
     maize_revenue: (farmSize * 2500 * 0.28).toFixed(0),
     beans_revenue: (farmSize * 900 * 0.65).toFixed(0),
     faw_organic_cost: (farmSize * 12).toFixed(2),
+    // Base estimates — overridden below if a real session plan is available
     expected_yield: farmSize * 2500, market_price: 0.28,
     gross_revenue: (farmSize * 2500 * 0.28).toFixed(0),
     net_profit: (farmSize * 2500 * 0.28 * 0.35).toFixed(0),
@@ -62,6 +64,8 @@ function buildFarmData(
     seed_type_rec: budget === 'low' ? 'OPV varieties (can save seed)' : 'Hybrid varieties (higher yield)',
     lime_urgency: ph && ph < 5.8 ? 'Apply lime before next planting — urgent' : 'pH acceptable — retest next season',
     germ_temp_status: temp && temp >= 15 && temp <= 35 ? 'suitable for germination' : 'check temperature before planting',
+    // Session overrides — real AI engine output takes precedence over estimates
+    ...Object.fromEntries(Object.entries(overrides).filter(([, v]) => v !== undefined)),
   };
 }
 
@@ -122,14 +126,29 @@ export function ChatScreen() {
   const activeCrop = useAppStore((s) => s.activeCrop);
   const profile    = useAppStore((s) => s.profile);
   const isOnline   = useAppStore((s) => s.isOnline);
+  const session    = useAppStore((s) => s.session);
   const { t }      = useTranslation();
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping]   = useState(false);
+
+  // Real values from session — override hardcoded placeholders in offline Q&A
+  const topRec    = session?.crop_recommendations?.recommendations?.[0];
+  const plan      = session?.crop_plan;
+  const calendar  = session?.daily_calendar;
 
   const farmData = buildFarmData(
     sensor?.soil_ph ?? null, sensor?.moisture_pct ?? null, sensor?.temp_c ?? null,
     activeCrop?.crop_name ?? null, profile?.agro_region ?? 2,
     profile?.farm_size_ha ?? 2.4, profile?.budget_level ?? 'low', profile?.district ?? '',
+    {
+      top_crop:     topRec?.crop_name                        ?? undefined,
+      top_score:    topRec ? String(topRec.score_pct)        : undefined,
+      days_planted: calendar?.days_since_planting            ?? undefined,
+      market_price: plan?.market_price_usd_kg                ?? undefined,
+      expected_yield: plan?.expected_yield_kg                ?? undefined,
+      gross_revenue: plan?.gross_revenue_usd                 ?? undefined,
+      net_profit:    plan?.net_profit_usd                    ?? undefined,
+    },
   );
 
   const ph = sensor?.soil_ph;
@@ -163,8 +182,14 @@ export function ChatScreen() {
             farm_size_ha: profile?.farm_size_ha ?? 2.4,
             budget_level: profile?.budget_level ?? 'low',
             current_month: new Date().toLocaleString('en', { month: 'long' }),
-          });
-        } catch {
+          },
+          // Send full conversation history so Groq can give contextual follow-ups.
+          // Filter to user/assistant turns only (exclude system messages if any).
+          messages
+            .filter(m => m.role === 'user' || m.role === 'assistant')
+            .map(m => ({ role: m.role, content: m.content })),
+        );
+        } catch (err) {
           res = `Could not reach the AI server right now. Try again in a moment, or turn off WiFi to browse the offline guide.`;
         }
       } else {

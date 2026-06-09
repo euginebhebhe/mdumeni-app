@@ -2,9 +2,8 @@
 // Bottom tab navigator — 5 tabs in correct order
 // Home · Calendar · Analytics · AI Chat · Settings
 
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useAppInit } from '@/hooks/useAppInit';
-import { useEffect, useRef } from 'react';
 import { pollLatestReading } from '@/services/api';
 import { checkAndAlertSensorThresholds, checkHarvestAlert, scheduleDailyTaskReminder } from '@/services/notifications';
 import { insertReading } from '@/db/database';
@@ -22,11 +21,11 @@ import { Colors, BorderRadius } from '@/constants/theme';
 import type { RootTabParamList } from '@/types';
 
 // Screen imports (each screen is its own file)
-import { HomeScreen }       from '@/screens/HomeScreen';
-import { MarketScreen }      from '@/screens/MarketScreen';
-import { PlanScreen }        from '@/screens/PlanScreen';
-import { MyFarmScreen }      from '@/screens/MyFarmScreen';
-import { MoreScreen }        from '@/screens/MoreScreen';
+import { HomeScreen } from '@/screens/HomeScreen';
+import { MarketScreen }  from '@/screens/MarketScreen';
+import { PlanScreen }    from '@/screens/PlanScreen';
+import { MyFarmScreen }  from '@/screens/MyFarmScreen';
+import { MoreScreen }    from '@/screens/MoreScreen';
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
 

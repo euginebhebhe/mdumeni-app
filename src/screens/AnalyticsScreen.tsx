@@ -2,34 +2,46 @@
 // Farm performance tracking — 6 KPI tiles, soil history bars,
 // season comparison table, spending breakdown
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, TouchableOpacity,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, RefreshControl,
 } from 'react-native';
+import { useSQLiteContext } from 'expo-sqlite';
 import { Card, SectionTitle, Badge, EmptyState } from '@/components/ui';
 import { useAppStore } from '@/store';
+import { getReadingHistory } from '@/db/database';
+import { getSeasonHistory } from '@/services/api';
 import { Colors, Spacing, BorderRadius, Shadows, Typography } from '@/constants/theme';
 
 // ── Period selector ────────────────────────────────────────────────────────────
 const PERIODS = ['This season', 'Last season', '2 seasons'] as const;
 type Period = typeof PERIODS[number];
 
-function PeriodTabs({ active, onChange }: { active: Period; onChange: (p: Period) => void }) {
+function PeriodTabs({
+  active, onChange, available,
+}: {
+  active: Period;
+  onChange: (p: Period) => void;
+  available: Record<Period, boolean>;
+}) {
   return (
     <View style={ptStyles.row}>
-      {PERIODS.map((p) => (
-        <TouchableOpacity
-           key={p}
-          onPress={() => p === 'This season' && onChange(p)}
-          style={[ptStyles.chip, active === p && ptStyles.chipActive,
-            p !== 'This season' && { opacity: 0.4 }]}
-          activeOpacity={p === 'This season' ? 0.7 : 1}
-        >
-          <Text style={[ptStyles.chipText, active === p && ptStyles.chipTextActive]}>
-            {p}{p !== 'This season' ? ' (coming soon)' : ''}
-          </Text>
-        </TouchableOpacity>
-      ))}
+      {PERIODS.map((p) => {
+        const enabled = available[p];
+        return (
+          <TouchableOpacity
+            key={p}
+            onPress={() => enabled && onChange(p)}
+            style={[ptStyles.chip, active === p && ptStyles.chipActive,
+              !enabled && { opacity: 0.4 }]}
+            activeOpacity={enabled ? 0.7 : 1}
+          >
+            <Text style={[ptStyles.chipText, active === p && ptStyles.chipTextActive]}>
+              {p}{!enabled && p !== 'This season' ? ' · no data' : ''}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
     </View>
   );
 }
@@ -157,140 +169,257 @@ function SpendRow({ label, amount, total, color }: SpendRowProps) {
 }
 
 // ── Main screen ───────────────────────────────────────────────────────────────
+interface SeasonRecord {
+  id:                 string;
+  crop_name:          string;
+  crop_id:            string;
+  planting_date:      string;
+  harvest_date:       string | null;
+  farm_size_ha:       number;
+  budget_level:       string;
+  predicted_yield_kg: number;
+  actual_yield_kg:    number;
+  total_cost_usd:     number;
+  gross_revenue_usd:  number;
+  net_profit_usd:     number;
+  notes:              string;
+}
+
 export function AnalyticsScreen() {
+  const db          = useSQLiteContext();
   const [period, setPeriod] = useState<Period>('This season');
   const session     = useAppStore((s) => s.session);
   const activeCrop  = useAppStore((s) => s.activeCrop);
   const sensor      = useAppStore((s) => s.sensorReading);
   const profile     = useAppStore((s) => s.profile);
+  const authToken   = useAppStore((s) => s.authToken);
+  const isOnline    = useAppStore((s) => s.isOnline);
+
+  // ── Real data state ──────────────────────────────────────────────────────
+  const [history, setHistory]       = useState<SeasonRecord[]>([]);   // past seasons, newest first
+  const [readings, setReadings]     = useState<{ soil_ph: number; moisture_pct: number; temp_c: number; recorded_at: string }[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    // Sensor history is always local (works offline)
+    try {
+      const r = await getReadingHistory(db, 7);
+      setReadings(r ?? []);
+    } catch { setReadings([]); }
+
+    // Season history needs the server + a logged-in farmer
+    if (authToken && isOnline) {
+      try {
+        const h = await getSeasonHistory(authToken);
+        // newest first by harvest/planting date
+        const sorted = [...(h ?? [])].sort((a, b) =>
+          (b.harvest_date ?? b.planting_date ?? '').localeCompare(a.harvest_date ?? a.planting_date ?? '')
+        );
+        setHistory(sorted);
+      } catch { /* keep whatever we had */ }
+    }
+  }, [db, authToken, isOnline]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }, [load]);
+
+  // ── Which past seasons map to which tab ──────────────────────────────────
+  const lastSeason = history[0] ?? null;        // most recent completed season
+  const twoSeasons = history[1] ?? null;        // the one before that
+  const available: Record<Period, boolean> = {
+    'This season': true,
+    'Last season': !!lastSeason,
+    '2 seasons':   !!twoSeasons,
+  };
 
   const plan     = session?.crop_plan;
   const calendar = session?.daily_calendar;
 
-  // Derived values from plan or defaults
-  const yieldKg       = plan?.expected_yield_kg    ?? 6000;
-  const netProfit     = plan?.net_profit_usd        ?? 254;
-  const totalCost     = plan?.total_cost_usd        ?? 757;
-  const roi           = plan?.roi_pct               ?? 32;
-  const phVal         = sensor?.soil_ph             ?? 5.1;
-  const moistureVal   = sensor?.moisture_pct        ?? 62;
-  const tempVal       = sensor?.temp_c              ?? 24;
-  const progressPct   = calendar?.progress_pct      ?? 29;
-  const phaseNum      = calendar?.current_phase.number ?? 3;
+  // ── Current-season live values (from session/sensor) ─────────────────────
+  const curYieldKg   = plan?.expected_yield_kg ?? 0;
+  const curNetProfit = plan?.net_profit_usd    ?? 0;
+  const curTotalCost = plan?.total_cost_usd    ?? 0;
+  const curRoi       = plan?.roi_pct           ?? 0;
+  const progressPct  = calendar?.progress_pct  ?? 0;
+  const phaseNum     = calendar?.current_phase?.number ?? 0;
 
-  const costLines = plan?.cost_lines ?? [
-    { category: 'Fertiliser',  amount_usd: 312, description: '' },
-    { category: 'Labour',      amount_usd: 216, description: '' },
-    { category: 'Seed',        amount_usd: 86,  description: '' },
-    { category: 'Chemicals',   amount_usd: 86,  description: '' },
-    { category: 'Contingency', amount_usd: 57,  description: '' },
-  ];
+  // ── 7-day sensor averages (real, computed) ───────────────────────────────
+  const avg = (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  const phSeries       = readings.map(r => r.soil_ph).filter(v => v != null);
+  const moistureSeries = readings.map(r => r.moisture_pct).filter(v => v != null);
+  const tempSeries     = readings.map(r => r.temp_c).filter(v => v != null);
+  // fall back to the single latest reading if we have no 7-day history yet
+  const phVal       = phSeries.length       ? avg(phSeries)       : (sensor?.soil_ph     ?? 0);
+  const moistureVal = moistureSeries.length ? avg(moistureSeries) : (sensor?.moisture_pct ?? 0);
+  const tempVal     = tempSeries.length     ? avg(tempSeries)     : (sensor?.temp_c       ?? 0);
 
+  // ── Period-aware displayed values ────────────────────────────────────────
+  // 'This season' uses live data; the others use the recorded SeasonRecord.
+  const periodRecord = period === 'Last season' ? lastSeason : period === '2 seasons' ? twoSeasons : null;
+  const yieldKg   = periodRecord ? periodRecord.actual_yield_kg : curYieldKg;
+  const netProfit = periodRecord ? periodRecord.net_profit_usd  : curNetProfit;
+  const totalCost = periodRecord ? periodRecord.total_cost_usd  : curTotalCost;
+  const roi       = periodRecord
+    ? (periodRecord.total_cost_usd > 0 ? Math.round((periodRecord.net_profit_usd / periodRecord.total_cost_usd) * 100) : 0)
+    : curRoi;
+
+  // ── Real trend vs the previous season ────────────────────────────────────
+  function pctChange(now: number, prev?: number | null): { label: string; up: boolean; down: boolean } {
+    if (!prev || prev <= 0 || !now) return { label: '—', up: false, down: false };
+    const change = ((now / prev) - 1) * 100;
+    const rounded = Math.round(change);
+    if (rounded === 0) return { label: '→ same as last season', up: false, down: false };
+    return {
+      label: `${rounded > 0 ? '▲ +' : '▼ '}${rounded}% vs last season`,
+      up:   rounded > 0,
+      down: rounded < 0,
+    };
+  }
+  const yieldTrend  = pctChange(yieldKg,   lastSeason?.actual_yield_kg);
+  const profitTrend = pctChange(netProfit, lastSeason?.net_profit_usd);
+
+  // ── KPI bar series: real past yields/profits + current as the last bar ───
+  const pastYieldBars  = [...history].reverse().map(h => h.actual_yield_kg).filter(v => v > 0);
+  const pastProfitBars = [...history].reverse().map(h => h.net_profit_usd);
+  const yieldBars  = pastYieldBars.length  ? [...pastYieldBars,  yieldKg].slice(-6)   : [yieldKg];
+  const profitBars = pastProfitBars.length ? [...pastProfitBars, netProfit].slice(-6) : [netProfit];
+  const phBars     = phSeries.length ? phSeries.slice(-6) : [phVal];
+
+  // ── Spending breakdown (live plan cost lines; empty if none) ─────────────
+  const costLines = plan?.cost_lines ?? [];
   const spendColors = [
     Colors.amber500, Colors.blue500, Colors.green400,
     Colors.red500, '#4A3585',
   ];
+
+  const fmt = (n: number) => Math.round(n).toLocaleString();
 
   return (
     <ScrollView
       style={styles.screen}
       showsVerticalScrollIndicator={false}
       contentContainerStyle={{ paddingBottom: 24 }}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.green600} />}
     >
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
       <View style={styles.hero}>
         <Text style={styles.heroLabel}>FARM PERFORMANCE</Text>
         <Text style={styles.heroTitle}>Analytics</Text>
         <Text style={styles.heroSub}>
-          Season overview · {profile?.farm_size_ha ?? 2.4} ha · {activeCrop?.crop_name ?? 'No active crop'}
+          {period === 'This season'
+            ? `Season overview · ${profile?.farm_size_ha ?? '—'} ha · ${activeCrop?.crop_name ?? 'No active crop'}`
+            : periodRecord
+              ? `${periodRecord.crop_name} · ${periodRecord.farm_size_ha} ha · ${periodRecord.budget_level} input`
+              : 'No data for this period'}
         </Text>
-        <PeriodTabs active={period} onChange={setPeriod} />
+        <PeriodTabs active={period} onChange={setPeriod} available={available} />
       </View>
 
       {/* ── KPI grid ─────────────────────────────────────────────────────── */}
       <View style={styles.kpiGrid}>
         <KPITile
-          label="Yield forecast"
-          value={`${yieldKg.toLocaleString()} kg`}
-          trend="▲ +18% vs last season"
-          trendUp
-          bars={[3800, 4200, 3900, 4800, 5500, yieldKg / 100]}
+          label="Yield"
+          value={`${fmt(yieldKg)} kg`}
+          trend={yieldTrend.label}
+          trendUp={yieldTrend.up}
+          trendDown={yieldTrend.down}
+          bars={yieldBars.map(v => v / 100)}
           barColor={Colors.green400}
-          subLabel="projected at harvest"
+          subLabel={period === 'This season' ? 'projected at harvest' : 'actual harvest'}
         />
         <KPITile
-          label="Net profit est."
-          value={`$${netProfit}`}
-          trend={`ROI ${roi}%`}
-          trendUp
-          bars={[90, 130, 110, 180, 220, netProfit / 10]}
+          label="Net profit"
+          value={`$${fmt(netProfit)}`}
+          trend={period === 'This season' ? `ROI ${roi}%` : profitTrend.label}
+          trendUp={period === 'This season' ? netProfit > 0 : profitTrend.up}
+          trendDown={period === 'This season' ? netProfit < 0 : profitTrend.down}
+          bars={profitBars.map(v => v / 10)}
           barColor={Colors.green400}
-          subLabel="USD projected"
+          subLabel={`USD · ROI ${roi}%`}
         />
         <KPITile
           label="Avg soil pH"
-          value={phVal.toFixed(1)}
-          trend="▼ Below optimal 6.2"
-          trendDown
-          bars={[6.4, 6.2, 5.9, 5.6, 5.3, phVal * 10]}
+          value={phVal ? phVal.toFixed(1) : '—'}
+          trend={phVal && phVal < 5.5 ? '▼ Below optimal 6.2' : phVal ? '→ Healthy range' : 'No readings yet'}
+          trendDown={!!phVal && phVal < 5.5}
+          bars={phBars.map(v => v * 10)}
           barColor={Colors.amber500}
-          subLabel="7-day average"
+          subLabel={phSeries.length ? `${phSeries.length}-reading average` : 'awaiting sensor'}
         />
         <KPITile
           label="Season progress"
           value={`${progressPct}%`}
-          trend={`Phase ${phaseNum} of 6`}
-          bars={[10, 17, 22, 27, progressPct]}
+          trend={phaseNum ? `Phase ${phaseNum} of 6` : 'No active crop'}
+          bars={[10, 17, 22, 27, progressPct].filter(v => v > 0)}
           barColor={Colors.green400}
-          subLabel={`Day ${calendar?.days_since_planting ?? 35} of 120`}
+          subLabel={calendar?.days_since_planting != null ? `Day ${calendar.days_since_planting}` : 'not planted'}
         />
       </View>
 
-      {/* ── Progress bar ─────────────────────────────────────────────────── */}
-      <View style={styles.progressCard}>
-        <View style={styles.progressHeader}>
-          <Text style={styles.progressTitle}>Season progress</Text>
-          <Text style={styles.progressVal}>{progressPct}%</Text>
+      {/* ── Progress bar (only meaningful for the live season) ───────────── */}
+      {period === 'This season' && (
+        <View style={styles.progressCard}>
+          <View style={styles.progressHeader}>
+            <Text style={styles.progressTitle}>Season progress</Text>
+            <Text style={styles.progressVal}>{progressPct}%</Text>
+          </View>
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${progressPct}%` as `${number}%` }]} />
+          </View>
+          <Text style={styles.progressSub}>
+            {calendar
+              ? `Phase ${phaseNum}: ${calendar.current_phase?.name ?? '—'} · ${calendar.days_to_harvest ?? '—'} days to harvest`
+              : 'Set an active crop to track season progress'}
+          </Text>
         </View>
-        <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: `${progressPct}%` as `${number}%` }]} />
-        </View>
-        <Text style={styles.progressSub}>
-          Phase {phaseNum}: {calendar?.current_phase.name ?? 'Vegetative growth'} · {calendar?.days_to_harvest ?? 85} days to harvest
-        </Text>
-      </View>
+      )}
 
       {/* ── Soil sensor history ───────────────────────────────────────────── */}
       <SectionTitle label="Soil sensor — 7-day history" />
       <Card>
-        <Text style={soilStyles.cardTitle}>Average daily readings</Text>
-        <SoilBar
-          label="Soil pH"
-          value={phVal}
-          maxVal={14}
-          color={phVal < 5.5 ? Colors.amber500 : Colors.green400}
-          unit=""
-          trend={phVal < 5.5 ? '▼' : '→'}
-          trendColor={phVal < 5.5 ? Colors.red500 : Colors.green400}
-        />
-        <SoilBar
-          label="Moisture"
-          value={moistureVal}
-          maxVal={100}
-          color={Colors.green400}
-          unit="%"
-          trend="→"
-          trendColor={Colors.slate400}
-        />
-        <SoilBar
-          label="Temperature"
-          value={tempVal}
-          maxVal={40}
-          color={Colors.blue500}
-          unit="°"
-          trend="▲"
-          trendColor={Colors.amber700}
-        />
+        {readings.length === 0 && !sensor ? (
+          <EmptyState
+            icon="📡"
+            title="No sensor readings yet"
+            message="Enter readings manually or connect a sensor to see your soil trends."
+          />
+        ) : (
+          <>
+            <Text style={soilStyles.cardTitle}>Average daily readings</Text>
+            <SoilBar
+              label="Soil pH"
+              value={Number(phVal.toFixed(1))}
+              maxVal={14}
+              color={phVal < 5.5 ? Colors.amber500 : Colors.green400}
+              unit=""
+              trend={phVal < 5.5 ? '▼' : '→'}
+              trendColor={phVal < 5.5 ? Colors.red500 : Colors.green400}
+            />
+            <SoilBar
+              label="Moisture"
+              value={Math.round(moistureVal)}
+              maxVal={100}
+              color={Colors.green400}
+              unit="%"
+              trend="→"
+              trendColor={Colors.slate400}
+            />
+            <SoilBar
+              label="Temperature"
+              value={Math.round(tempVal)}
+              maxVal={40}
+              color={Colors.blue500}
+              unit="°"
+              trend="▲"
+              trendColor={Colors.amber700}
+            />
+          </>
+        )}
       </Card>
 
       {/* ── Season history ────────────────────────────────────────────────── */}
@@ -299,62 +428,84 @@ export function AnalyticsScreen() {
         <View style={histStyles.header}>
           <Text style={histStyles.headerText}>Past seasons</Text>
         </View>
-        <SeasonRow
-          key="season-current"
-          cropName={activeCrop?.crop_name ?? 'Maize'}
-          variety="ZM521 · Low input"
-          size={`${activeCrop?.farm_size_ha ?? 2.4} ha`}
-          yieldKg={yieldKg}
-          profitUsd={netProfit}
-          isPositive={netProfit >= 0}
-        />
-        <SeasonRow
-          key="season-2024-25"
-          cropName="Maize 2024/25"
-          variety="ZM521 · Low input"
-          size="2.4 ha"
-          yieldKg={5080}
-          profitUsd={198}
-          isPositive
-        />
-        <SeasonRow
-          key="season-gn-2024"
-          cropName="Groundnuts 2024"
-          variety="Falcon · Low input"
-          size="2.4 ha"
-          yieldKg={4320}
-          profitUsd={312}
-          isPositive
-        />
-        <SeasonRow
-          key="season-2023-24"
-          cropName="Maize 2023/24"
-          variety="ZM521 · Low input"
-          size="2.4 ha"
-          yieldKg={3240}
-          profitUsd={87}
-          isPositive
-        />
+
+        {/* Current season (live) */}
+        {activeCrop && (
+          <SeasonRow
+            key="season-current"
+            cropName={`${activeCrop.crop_name} (current)`}
+            variety={`${profile?.budget_level ?? 'low'} input`}
+            size={`${activeCrop.farm_size_ha ?? profile?.farm_size_ha ?? '—'} ha`}
+            yieldKg={curYieldKg}
+            profitUsd={curNetProfit}
+            isPositive={curNetProfit >= 0}
+          />
+        )}
+
+        {/* Recorded past seasons (real) */}
+        {history.map((h) => (
+          <SeasonRow
+            key={h.id}
+            cropName={h.crop_name}
+            variety={`${h.budget_level} input`}
+            size={`${h.farm_size_ha} ha`}
+            yieldKg={h.actual_yield_kg}
+            profitUsd={Math.round(h.net_profit_usd)}
+            isPositive={h.net_profit_usd >= 0}
+          />
+        ))}
+
+        {/* Empty state when nothing recorded yet */}
+        {history.length === 0 && !activeCrop && (
+          <EmptyState
+            icon="🌾"
+            title="No seasons yet"
+            message="Record your first harvest to start tracking yields and profit over time."
+          />
+        )}
+        {history.length === 0 && activeCrop && (
+          <Text style={histStyles.meta}>
+            Record your harvest at the end of this season to unlock season-over-season comparisons.
+          </Text>
+        )}
       </Card>
 
       {/* ── Spending breakdown ─────────────────────────────────────────────── */}
-      <SectionTitle label="Input spending — this season" />
+      <SectionTitle label={period === 'This season' ? 'Input spending — this season' : `Input spending — ${period.toLowerCase()}`} />
       <Card>
-        {costLines
-          .filter((line, idx, arr) => arr.findIndex(l => l.category === line.category) === idx)
-          .map((line, i) => (
-          <SpendRow
-            key={`cost-${i}-${line.category}`}
-            label={line.category}
-            amount={line.amount_usd}
-            total={totalCost}
-            color={spendColors[i % spendColors.length]}
+        {period === 'This season' && costLines.length > 0 ? (
+          <>
+            {costLines
+              .filter((line, idx, arr) => arr.findIndex(l => l.category === line.category) === idx)
+              .map((line, i) => (
+              <SpendRow
+                key={`cost-${i}-${line.category}`}
+                label={line.category}
+                amount={line.amount_usd}
+                total={totalCost}
+                color={spendColors[i % spendColors.length]}
+              />
+            ))}
+            <View style={spendStyles.total}>
+              <Text style={spendStyles.totalLabel}>Total</Text>
+              <Text style={spendStyles.totalVal}>${fmt(totalCost)}</Text>
+            </View>
+          </>
+        ) : totalCost > 0 ? (
+          // Past season: we only store the total, not a category breakdown
+          <View style={spendStyles.total}>
+            <Text style={spendStyles.totalLabel}>Total input cost</Text>
+            <Text style={spendStyles.totalVal}>${fmt(totalCost)}</Text>
+          </View>
+        ) : (
+          <EmptyState
+            icon="🧾"
+            title="No cost data"
+            message={period === 'This season'
+              ? 'Run a profit plan to see your input cost breakdown.'
+              : 'No recorded costs for this season.'}
           />
-        ))}
-        <View style={spendStyles.total}>
-          <Text style={spendStyles.totalLabel}>Total</Text>
-          <Text style={spendStyles.totalVal}>${totalCost}</Text>
-        </View>
+        )}
       </Card>
     </ScrollView>
   );

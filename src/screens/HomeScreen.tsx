@@ -10,6 +10,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   RefreshControl,
+  Modal
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -34,7 +35,7 @@ import { Colors, Spacing, BorderRadius, Shadows, Typography } from '@/constants/
 import type { RootTabParamList } from '@/types';
 import { CalendarScreen } from '@/screens/CalendarScreen';
 import { ChatScreen }     from '@/screens/ChatScreen';
-import { Modal }          from 'react-native';
+
 
 type Nav = BottomTabNavigationProp<RootTabParamList>;
 
@@ -154,14 +155,14 @@ export function HomeScreen() {
   const db = useSQLiteContext();
   const [marketPrices, setMarketPrices] = useState<any[]>([]);
   const [bestOpportunity, setBestOpportunity] = useState<any>(null);
-  const [showManual, setShowManual] = React.useState(false);
+  const [showManual, setShowManual] = useState(false);
 
   const profile       = useAppStore((s) => s.profile);
   const sensorReading = useAppStore((s) => s.sensorReading);
   const activeCrop    = useAppStore((s) => s.activeCrop);
   const session       = useAppStore((s) => s.session);
   const sessionLoading = useAppStore((s) => s.sessionLoading);
-  const isOnline      = true;
+  const isOnline      = useAppStore((s) => s.isOnline);
   const activeAlerts  = useAppStore((s) => s.activeAlerts);
   const criticalCount = activeAlerts.filter((a) => a.severity === 'critical').length;
   const [showCalendar, setShowCalendar] = useState(false);
@@ -176,11 +177,12 @@ export function HomeScreen() {
   const loadMarketData = async () => {
     try {
       const body = {
-        crop_id: 'CROP_002', crop_name: 'Sugar beans',
-        farm_size_ha: profile?.farm_size_ha ?? 2.4,
-        budget_level: profile?.budget_level ?? 'low',
-        agro_region:  profile?.agro_region ?? 2,
-        has_irrigation: profile?.has_irrigation ?? false,
+        crop_id:        activeCrop?.crop_id       ?? 'CROP_002',
+        crop_name:      activeCrop?.crop_name      ?? 'Sugar beans',
+        farm_size_ha:   profile?.farm_size_ha      ?? 2.4,
+        budget_level:   profile?.budget_level      ?? 'low',
+        agro_region:    profile?.agro_region       ?? 2,
+        has_irrigation: profile?.has_irrigation    ?? false,
         planting_month: new Date().getMonth() + 1,
       };
       const [summaryResult, profitResult] = await Promise.all([
@@ -462,8 +464,8 @@ export function HomeScreen() {
           {phWarn && (
             <View style={styles.aiSuggestion}>
               <Text style={styles.aiSuggestionText}>
-                💡 Try: "How much lime do I need for my{' '}
-                {profile?.farm_size_ha ?? 2.4} ha?"
+                💡 Try: &quot;How much lime do I need for my{' '}
+                {profile?.farm_size_ha ?? 2.4} ha?&quot;
               </Text>
             </View>
           )}

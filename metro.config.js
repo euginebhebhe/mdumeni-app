@@ -1,22 +1,25 @@
 const { getDefaultConfig } = require('expo/metro-config');
+const path = require('path');
 
-/** @type {import('expo/metro-config').MetroConfig} */
 const config = getDefaultConfig(__dirname);
 
-// Allow importing from src/ with @/ alias
-config.resolver.sourceExts = [
-  ...config.resolver.sourceExts,
-  'mjs',
-  'cjs',
-];
+const reactPath = path.resolve(__dirname, 'node_modules/react');
+const reactNativePath = path.resolve(__dirname, 'node_modules/react-native');
 
-// Ensure JSON files (crop dataset, pest dataset, offline QA) are bundled
-config.resolver.assetExts = config.resolver.assetExts.filter(
-  (ext) => ext !== 'svg'
-);
-config.resolver.sourceExts = [
-  ...config.resolver.sourceExts,
-  'svg',
-];
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName === 'react') {
+    return {
+      filePath: path.join(reactPath, 'index.js'),
+      type: 'sourceFile',
+    };
+  }
+  if (moduleName === 'react-native') {
+    return {
+      filePath: path.join(reactNativePath, 'index.js'),
+      type: 'sourceFile',
+    };
+  }
+  return context.resolveRequest(context, moduleName, platform);
+};
 
 module.exports = config;

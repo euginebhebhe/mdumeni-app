@@ -98,15 +98,16 @@ export async function checkHealth(): Promise<boolean> {
   }
 }
 
-/** AI chat — passes full farming context to Groq */
+/** AI chat — passes full conversation history to Groq for continuity */
 export async function callAIChat(
   question: string,
-  farmContext: Record<string, unknown>
+  farmContext: Record<string, unknown>,
+  history: Array<{ role: string; content: string }> = [],
 ): Promise<string> {
   const response = await post<
-    { question: string; context: Record<string, unknown> },
+    { question: string; context: Record<string, unknown>; history: Array<{ role: string; content: string }> },
     { answer: string; response: string }
-  >('/chat', { question, context: farmContext });
+  >('/chat', { question, context: farmContext, history });
   return response.answer ?? response.response ?? '';
 }
 
@@ -196,4 +197,32 @@ export async function setFarmerCrop(
   token: string
 ): Promise<void> {
   await post('/farmer/crop', data, token);
+}
+
+/** Fetch nearby agricultural services from the backend (GPS-sorted, online only) */
+export async function fetchNearbyServices(query: {
+  lat: number; lng: number; province: string;
+  types?: string[]; crop_id?: string; radius_km?: number; limit?: number;
+}): Promise<Array<Record<string, unknown>>> {
+  try {
+    const res = await post<typeof query, Array<Record<string, unknown>>>(
+      '/services/nearby', query
+    );
+    return Array.isArray(res) ? res : [];
+  } catch {
+    return []; // silent fail — caller falls back to offline province index
+  }
+}
+
+/** Fetch district services summary (AGRITEX office + key services) */
+export async function fetchDistrictServices(
+  province: string, district: string
+): Promise<Record<string, unknown> | null> {
+  try {
+    return await get<Record<string, unknown>>(
+      `/services/district/${encodeURIComponent(province)}/${encodeURIComponent(district)}`
+    );
+  } catch {
+    return null;
+  }
 }

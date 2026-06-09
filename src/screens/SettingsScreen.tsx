@@ -2,10 +2,10 @@
 // Settings & Help — farm profile, sensor, app preferences, help links
 // All data read from and written back to SQLite via the Zustand store
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch,
-  Alert,
+  Alert, Modal
 } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useAppStore } from '@/store';
@@ -22,7 +22,12 @@ import { ProfileEditScreen } from '@/screens/ProfileEditScreen';
 import { ProjectModeScreen } from '@/screens/ProjectModeScreen';
 import { YieldRecordScreen } from '@/screens/YieldRecordScreen';
 import { SeasonHistoryScreen } from '@/screens/SeasonHistoryScreen';
-import { Modal } from 'react-native';
+import {
+  getExtensionOffice, getAgroDealers, getGmbDepots, getMarkets,
+} from '@/data/provinceIndex';
+import { fetchNearbyServices, fetchDistrictServices } from '@/services/api';
+import type { ServiceLocation as SL } from '@/data/locationTypes';
+
 
 // ── Setting row ────────────────────────────────────────────────────────────────
 interface SettingRowProps {
@@ -71,6 +76,7 @@ export function SettingsScreen() {
   const navigation  = useNavigation<BottomTabNavigationProp<RootTabParamList>>();
   const isDemoMode  = useAppStore((s) => s.isDemoMode);
   const profile        = useAppStore((s) => s.profile);
+  const isOnline       = useAppStore((s) => s.isOnline);
   const updateProfile  = useAppStore((s) => s.updateProfile);
   const sensorConnected = useAppStore((s) => s.sensorConnected);
   const sensorDeviceId  = useAppStore((s) => s.sensorDeviceId);
@@ -83,6 +89,44 @@ export function SettingsScreen() {
   const [showYieldRecord, setShowYieldRecord]     = useState(false);
   const [showSeasonHistory, setShowSeasonHistory] = useState(false);
   const [showManual, setShowManual] = useState(false);
+
+  // ── Nearby services (loaded from province JSON) ────────────────────────────
+  const [agritexOffice, setAgritexOffice] = useState<SL | null>(null);
+  const [nearbyDealers, setNearbyDealers] = useState<SL[]>([]);
+  const [nearbyGmb,     setNearbyGmb]     = useState<SL[]>([]);
+  const [nearbyMarkets, setNearbyMarkets] = useState<SL[]>([]);
+
+  useEffect(() => {
+    if (!profile?.province) return;
+    const p = profile.province;
+    const d = profile.district ?? '';
+
+    const loadServices = async () => {
+      try {
+        if (isOnline) {
+          // Online path: backend returns GPS-sorted results from province JSON files
+          const result = await fetchDistrictServices(p, d);
+          if (result) {
+            setAgritexOffice((result.agritex_office as SL) ?? null);
+            setNearbyDealers((result.services as SL[])?.filter(s => s.type === 'agro_dealer').slice(0, 2) ?? []);
+            setNearbyGmb((result.services as SL[])?.filter(s => s.type === 'gmb_depot').slice(0, 1) ?? []);
+            setNearbyMarkets((result.services as SL[])?.filter(s => s.type === 'fresh_market').slice(0, 1) ?? []);
+            return;
+          }
+        }
+        // Offline path: load from bundled province JSON via province index
+        setAgritexOffice(getExtensionOffice(p, d));
+        const dealers = getAgroDealers(p);
+        const local   = dealers.filter(s => s.district === d);
+        const others  = dealers.filter(s => s.district !== d);
+        setNearbyDealers([...local, ...others].slice(0, 2));
+        setNearbyGmb(getGmbDepots(p).slice(0, 1));
+        setNearbyMarkets(getMarkets(p).slice(0, 1));
+      } catch { /* province file not yet bundled during development */ }
+    };
+
+    loadServices();
+  }, [profile?.province, profile?.district, isOnline]);
 
   const toggleAlerts = (val: boolean) => {
     setAlertsOn(val);
@@ -118,24 +162,9 @@ export function SettingsScreen() {
   };
 
   const changeLanguage = () => {
-    const languages = ['english', 'shona', 'ndebele'] as const;
-    const current = profile?.language ?? 'english';
-    const idx  = languages.indexOf(current);
-    const next = languages[(idx + 1) % languages.length];
-    Alert.alert(
-      'Change language',
-      `Switch to ${next.charAt(0).toUpperCase() + next.slice(1)}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Confirm',
-          onPress: async () => {
-            updateProfile({ language: next });
-            await saveProfile(db, { language: next });
-          },
-        },
-      ]
-    );
+    // Language cycling is English-only while Shona/Ndebele translations
+    // are pending agronomic review. Alert the user clearly.
+    Alert.alert('Language', 'The app is currently available in English only. Shona and Ndebele support is coming in a future update.');
   };
 
   const pairSensor = () => {
@@ -150,7 +179,7 @@ export function SettingsScreen() {
     ? `Region ${profile.agro_region} — ${['Highveld', 'Mashonaland', 'Midlands', 'Masvingo', 'Lowveld'][profile.agro_region - 1] ?? ''}`
     : '—';
 
-  const langLabel = profile?.language === 'shona' ? 'Shona' : profile?.language === 'ndebele' ? 'Ndebele' : 'English';
+  const langLabel = 'English';
 
   return (
     <>
@@ -343,6 +372,66 @@ export function SettingsScreen() {
         />
       </SettingsGroup>
 
+      {/* ── Nearby services ──────────────────────────────────────────────── */}
+      {profile?.province && (nearbyDealers.length > 0 || agritexOffice) && (
+        <>
+          <Text style={styles.groupLabel}>Nearby services — {profile.district || profile.province}</Text>
+          <SettingsGroup>
+            {/* AGRITEX office for farmer's district */}
+            {agritexOffice && (
+              <SettingRow
+                icon="🏛"
+                title={`AGRITEX — ${agritexOffice.district}`}
+                subtitle={agritexOffice.address}
+                onPress={() => Alert.alert(
+                  agritexOffice.name,
+                  `${agritexOffice.address}\n\n${agritexOffice.notes ?? ''}${agritexOffice.phone ? `\n\n📞 ${agritexOffice.phone}` : ''}`,
+                )}
+              />
+            )}
+            {/* Nearest agro dealers */}
+            {nearbyDealers.slice(0, 2).map((s) => (
+              <SettingRow
+                key={s.id}
+                icon="🌾"
+                title={s.name}
+                subtitle={s.town + (s.phone ? ` · ${s.phone}` : '')}
+                onPress={() => Alert.alert(
+                  s.name,
+                  `${s.address}\n\n${s.notes ?? ''}${s.phone ? `\n\n📞 ${s.phone}` : ''}`,
+                )}
+              />
+            ))}
+            {/* Nearest GMB depot */}
+            {nearbyGmb[0] && (
+              <SettingRow
+                icon="🏭"
+                title={nearbyGmb[0].name}
+                subtitle={`${nearbyGmb[0].town} · Grain Marketing Board`}
+                onPress={() => Alert.alert(
+                  nearbyGmb[0].name,
+                  `${nearbyGmb[0].address}\n\n${nearbyGmb[0].notes ?? ''}${(nearbyGmb[0] as any).crops_accepted ? `\n\nAccepts: ${(nearbyGmb[0] as any).crops_accepted.join(', ')}` : ''}`,
+                )}
+              />
+            )}
+            {/* Nearest fresh market */}
+            {nearbyMarkets[0] && (
+              <SettingRow
+                key={nearbyMarkets[0].id}
+                icon="🛒"
+                title={nearbyMarkets[0].name}
+                subtitle={nearbyMarkets[0].open_hours ?? nearbyMarkets[0].town}
+                onPress={() => Alert.alert(
+                  nearbyMarkets[0].name,
+                  `${nearbyMarkets[0].address}\n\n${nearbyMarkets[0].notes ?? ''}`,
+                )}
+                isLast
+              />
+            )}
+          </SettingsGroup>
+        </>
+      )}
+
       {/* ── About ────────────────────────────────────────────────────────── */}
       <View style={styles.about}>
         <Text style={styles.aboutLogo}>🌱 MDUMENI</Text>
@@ -351,7 +440,7 @@ export function SettingsScreen() {
           Built by INTELLI-Farming · University of Zimbabwe
         </Text>
         <Text style={styles.aboutSub}>
-          Engine dataset: 30 crops · 5 agro-ecological regions
+          Engine dataset: 60 crops · 5 agro-ecological regions
         </Text>
       </View>
     </ScrollView>
